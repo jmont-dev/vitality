@@ -16,6 +16,9 @@ target_link_libraries(vitality_basic_example PRIVATE Vitality)
 if(UNIX)
     add_executable(vitality_socket_example examples/socket.cpp)
     target_link_libraries(vitality_socket_example PRIVATE Vitality)
+
+    add_executable(vitality_dispatch_example examples/dispatch.cpp)
+    target_link_libraries(vitality_dispatch_example PRIVATE Vitality)
 endif()
 
 add_executable(vitality_tests tests/vitality_tests.cpp)

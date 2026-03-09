@@ -118,6 +118,15 @@ Use that only when your wire convention stores payload words in the opposite byt
 - receive with `recvfrom(...)`
 - parse with `vita::view::signal`
 
+## Dispatch example
+
+`examples/dispatch.cpp` shows how to bind your own handlers for both packet kinds and delegate parse+visit in one call:
+
+- build one signal packet and one context packet
+- send both over localhost UDP
+- bind member functions with `std::bind`
+- call `vita::packet::dispatch(...)` so the matching handler runs automatically
+
 ## Build
 
 Include the namespaced header:

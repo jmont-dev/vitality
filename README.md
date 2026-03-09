@@ -114,7 +114,7 @@ int main() {
 
 ## Build
 
-Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework.
+Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework. There are two examples: `examples/basic.cpp` for in-memory round-tripping and `examples/socket.cpp` for sending VITA packets over a localhost UDP socket and parsing them on receipt.
 
 ```cpp
 #include "vitality/vitality.hpp"
@@ -151,4 +151,5 @@ The current test suite covers:
 - context serialize/parse round-trips for the supported CIF0 subset
 - packet-type dispatch through `parse_packet(...)`
 - big-endian wire encoding for metadata fields
+- localhost UDP socket send/receive integration for context and signal packets
 - error handling for malformed packet sizes, unsupported indicators, missing required fields, and invalid serialization inputs

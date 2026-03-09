@@ -7,8 +7,18 @@
 #include <functional>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 #include <variant>
 #include <vector>
+
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
 
 #include "vitality/vitality.hpp"
 
@@ -33,6 +43,112 @@ void expect_parse_error(const std::function<void()>& fn, vitality::ParseErrorCod
 void expect_invalid_argument(const std::function<void()>& fn) {
     CHECK_THROWS_AS(fn(), std::invalid_argument);
 }
+
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+
+class UdpSocket {
+public:
+    explicit UdpSocket(int fd = -1) noexcept : fd_(fd) {}
+
+    ~UdpSocket() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+    }
+
+    UdpSocket(const UdpSocket&) = delete;
+    UdpSocket& operator=(const UdpSocket&) = delete;
+
+    UdpSocket(UdpSocket&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
+
+    UdpSocket& operator=(UdpSocket&& other) noexcept {
+        if (this != &other) {
+            if (fd_ >= 0) {
+                ::close(fd_);
+            }
+            fd_ = std::exchange(other.fd_, -1);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] int get() const noexcept { return fd_; }
+
+private:
+    int fd_ = -1;
+};
+
+struct BoundReceiver {
+    UdpSocket socket;
+    sockaddr_in address{};
+};
+
+[[nodiscard]] UdpSocket make_udp_socket() {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        throw std::system_error(errno, std::generic_category(), "socket");
+    }
+    return UdpSocket(fd);
+}
+
+void set_receive_timeout(int fd, int seconds) {
+    timeval timeout{};
+    timeout.tv_sec = seconds;
+    timeout.tv_usec = 0;
+    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        throw std::system_error(errno, std::generic_category(), "setsockopt(SO_RCVTIMEO)");
+    }
+}
+
+[[nodiscard]] BoundReceiver bind_loopback_receiver() {
+    BoundReceiver receiver{make_udp_socket(), {}};
+    set_receive_timeout(receiver.socket.get(), 1);
+
+    receiver.address.sin_family = AF_INET;
+    receiver.address.sin_port = htons(0);
+    receiver.address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (::bind(receiver.socket.get(), reinterpret_cast<const sockaddr*>(&receiver.address), sizeof(receiver.address)) != 0) {
+        throw std::system_error(errno, std::generic_category(), "bind");
+    }
+
+    socklen_t size = sizeof(receiver.address);
+    if (::getsockname(receiver.socket.get(), reinterpret_cast<sockaddr*>(&receiver.address), &size) != 0) {
+        throw std::system_error(errno, std::generic_category(), "getsockname");
+    }
+
+    return receiver;
+}
+
+void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
+    const auto sent = ::sendto(fd,
+                               reinterpret_cast<const void*>(bytes.data()),
+                               bytes.size(),
+                               0,
+                               reinterpret_cast<const sockaddr*>(&destination),
+                               sizeof(destination));
+    if (sent < 0) {
+        throw std::system_error(errno, std::generic_category(), "sendto");
+    }
+    REQUIRE(static_cast<std::size_t>(sent) == bytes.size());
+}
+
+[[nodiscard]] std::vector<byte> receive_datagram(int fd) {
+    std::array<byte, 65536> buffer{};
+    sockaddr_in source{};
+    socklen_t source_size = sizeof(source);
+    const auto received = ::recvfrom(fd,
+                                     reinterpret_cast<void*>(buffer.data()),
+                                     buffer.size(),
+                                     0,
+                                     reinterpret_cast<sockaddr*>(&source),
+                                     &source_size);
+    if (received < 0) {
+        throw std::system_error(errno, std::generic_category(), "recvfrom");
+    }
+    return std::vector<byte>(buffer.begin(), buffer.begin() + received);
+}
+
+#endif
 
 } // namespace
 
@@ -298,4 +414,93 @@ TEST_CASE("context view missing field accessor throws") {
 
     expect_parse_error([&] { (void)parsed.reference_point_id(); },
                        ParseErrorCode::MissingRequiredField);
+}
+
+TEST_CASE("socket loopback round trips context and signal packets") {
+    using namespace vitality;
+
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+    auto receiver = bind_loopback_receiver();
+    auto sender = make_udp_socket();
+
+    ContextPacket context;
+    context.set_stream_id(0x0A0B0C0Du);
+    context.set_change_indicator(true);
+    context.set_bandwidth_hz(2.5e6);
+    context.set_rf_reference_frequency_hz(433.92e6);
+    context.set_sample_rate_sps(1.25e6);
+
+    SignalDataFormat format;
+    format.set_packing_method(PackingMethod::ProcessingEfficient);
+    format.set_real_complex_type(RealComplexType::ComplexCartesian);
+    format.set_data_item_format(DataItemFormat::SignedFixedPoint);
+    format.set_data_item_size(16);
+    format.set_item_packing_field_size(16);
+    context.set_signal_data_format(format);
+
+    std::vector<byte> payload = {
+        byte{0x12}, byte{0x34}, byte{0x56}, byte{0x78},
+        byte{0x9A}, byte{0xBC}, byte{0xDE}, byte{0xF0},
+    };
+
+    Timestamp ts;
+    ts.set_integer_type(IntegerTimestampType::UTC);
+    ts.set_fractional_type(FractionalTimestampType::SampleCount);
+    ts.set_integer_seconds(12345u);
+    ts.set_fractional(67890u);
+
+    SignalDataPacket signal;
+    signal.set_stream_id(0x0A0B0C0Du);
+    signal.set_timestamp(ts);
+    signal.set_payload_view(bytes_view{payload.data(), payload.size()});
+
+    const auto context_bytes = context.to_bytes();
+    const auto signal_bytes = signal.to_bytes();
+
+    send_datagram(sender.get(), receiver.address, as_bytes_view(context_bytes));
+    send_datagram(sender.get(), receiver.address, as_bytes_view(signal_bytes));
+
+    bool saw_context = false;
+    bool saw_signal = false;
+
+    for (int i = 0; i < 2; ++i) {
+        auto received = receive_datagram(receiver.socket.get());
+        const auto parsed = parse_packet(as_bytes_view(received));
+
+        if (std::holds_alternative<ContextPacketView>(parsed)) {
+            const auto& parsed_context = std::get<ContextPacketView>(parsed);
+            saw_context = true;
+            REQUIRE(parsed_context.stream_id().has_value());
+            CHECK(parsed_context.stream_id().value() == 0x0A0B0C0Du);
+            CHECK(parsed_context.change_indicator());
+            CHECK(parsed_context.bandwidth_hz() == doctest::Approx(2.5e6).epsilon(1e-12));
+            CHECK(parsed_context.rf_reference_frequency_hz() == doctest::Approx(433.92e6).epsilon(1e-12));
+            CHECK(parsed_context.sample_rate_sps() == doctest::Approx(1.25e6).epsilon(1e-12));
+            REQUIRE(parsed_context.has_signal_data_format());
+            const auto parsed_format = parsed_context.signal_data_format();
+            CHECK(static_cast<int>(parsed_format.real_complex_type()) == static_cast<int>(RealComplexType::ComplexCartesian));
+            CHECK(static_cast<int>(parsed_format.data_item_format()) == static_cast<int>(DataItemFormat::SignedFixedPoint));
+            CHECK(parsed_format.data_item_size() == 16u);
+            CHECK(parsed_format.item_packing_field_size() == 16u);
+        } else {
+            const auto& parsed_signal = std::get<SignalDataPacketView>(parsed);
+            saw_signal = true;
+            REQUIRE(parsed_signal.stream_id().has_value());
+            CHECK(parsed_signal.stream_id().value() == 0x0A0B0C0Du);
+            CHECK(static_cast<int>(parsed_signal.timestamp().integer_type()) == static_cast<int>(IntegerTimestampType::UTC));
+            CHECK(static_cast<int>(parsed_signal.timestamp().fractional_type()) == static_cast<int>(FractionalTimestampType::SampleCount));
+            CHECK(parsed_signal.timestamp().integer_seconds() == 12345u);
+            CHECK(parsed_signal.timestamp().fractional() == 67890u);
+            REQUIRE(parsed_signal.payload().size() == payload.size());
+            for (std::size_t j = 0; j < payload.size(); ++j) {
+                CHECK(u8(parsed_signal.payload()[j]) == u8(payload[j]));
+            }
+        }
+    }
+
+    CHECK(saw_context);
+    CHECK(saw_signal);
+#else
+    DOCTEST_SKIP("POSIX sockets are not available on this platform");
+#endif
 }

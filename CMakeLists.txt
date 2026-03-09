@@ -14,6 +14,11 @@ target_compile_features(Vitality INTERFACE cxx_std_20)
 add_executable(vitality_example examples/basic.cpp)
 target_link_libraries(vitality_example PRIVATE Vitality)
 
+if(UNIX)
+    add_executable(vitality_socket_example examples/socket.cpp)
+    target_link_libraries(vitality_socket_example PRIVATE Vitality)
+endif()
+
 add_executable(vitality_tests tests/vitality_tests.cpp)
 target_include_directories(vitality_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(vitality_tests PRIVATE Vitality)

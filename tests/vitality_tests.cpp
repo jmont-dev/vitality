@@ -94,6 +94,29 @@ TEST_CASE("signal packet round trip preserves header metadata and zero-copy payl
     CHECK(parsed.payload().data() == bytes.data() + 28);
 }
 
+TEST_CASE("signal packet payload setters control copy-vs-view semantics") {
+    std::vector<vita::byte> payload = {
+        vita::byte{0xAA}, vita::byte{0xBB}, vita::byte{0xCC}, vita::byte{0xDD},
+    };
+
+    vita::packet::signal packet;
+    packet.set_stream_id(0x01020304u);
+
+    packet.set_payload_view(vita::bytes_view{payload.data(), payload.size()});
+    CHECK(packet.payload().data() == payload.data());
+    CHECK(packet.payload().size() == payload.size());
+
+    payload[0] = vita::byte{0xEE};
+    CHECK(std::to_integer<std::uint8_t>(packet.payload()[0]) == 0xEEu);
+
+    packet.set_payload(vita::bytes_view{payload.data(), payload.size()});
+    CHECK(packet.payload().size() == payload.size());
+    CHECK(packet.payload().data() != payload.data());
+
+    payload[1] = vita::byte{0x11};
+    CHECK(std::to_integer<std::uint8_t>(packet.payload()[1]) == 0xBBu);
+}
+
 TEST_CASE("context packet round trip preserves supported CIF0 subset") {
     vita::timestamp ts;
     ts.set_integer_type(vita::IntegerTimestampType::GPS);

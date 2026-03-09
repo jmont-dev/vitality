@@ -284,6 +284,18 @@ TEST_CASE("byteswap helpers cover common wire types") {
     CHECK(samples[1].imag() == doctest::Approx(4.25f));
 }
 
+TEST_CASE("u8-byte conversion helpers preserve data") {
+    const std::vector<std::uint8_t> source_u8 = {0x00u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0xFFu};
+    const auto bytes = vita::from_u8(source_u8);
+    const auto roundtrip = vita::to_u8(vita::as_bytes_view(bytes));
+    CHECK(roundtrip == source_u8);
+
+    const std::vector<std::uint8_t> empty_u8;
+    const auto empty_bytes = vita::from_u8(empty_u8);
+    CHECK(empty_bytes.empty());
+    CHECK(vita::to_u8(vita::as_bytes_view(empty_bytes)).empty());
+}
+
 
 TEST_CASE("signal data format setters reject out-of-range values") {
     vita::signal::format fmt;

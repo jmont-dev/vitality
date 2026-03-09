@@ -477,27 +477,36 @@ public:
     constexpr void set_sample_component_repeat(bool value) noexcept {
         word0_ = (word0_ & ~(0x01U << 23U)) | (static_cast<std::uint32_t>(value ? 1U : 0U) << 23U);
     }
-    constexpr void set_event_tag_size(std::uint8_t value) noexcept {
-        word0_ = (word0_ & ~(0x07U << 20U)) | (static_cast<std::uint32_t>(value & 0x07U) << 20U);
+    void set_event_tag_size(std::uint8_t value) {
+        if (value > 7U) {
+            throw std::invalid_argument("event tag size must be in the range [0, 7]");
+        }
+        word0_ = (word0_ & ~(0x07U << 20U)) | (static_cast<std::uint32_t>(value) << 20U);
     }
-    constexpr void set_channel_tag_size(std::uint8_t value) noexcept {
-        word0_ = (word0_ & ~(0x0FU << 16U)) | (static_cast<std::uint32_t>(value & 0x0FU) << 16U);
+    void set_channel_tag_size(std::uint8_t value) {
+        if (value > 15U) {
+            throw std::invalid_argument("channel tag size must be in the range [0, 15]");
+        }
+        word0_ = (word0_ & ~(0x0FU << 16U)) | (static_cast<std::uint32_t>(value) << 16U);
     }
-    constexpr void set_data_item_fraction_size(std::uint8_t value) noexcept {
-        word0_ = (word0_ & ~(0x0FU << 12U)) | (static_cast<std::uint32_t>(value & 0x0FU) << 12U);
+    void set_data_item_fraction_size(std::uint8_t value) {
+        if (value > 15U) {
+            throw std::invalid_argument("data item fraction size must be in the range [0, 15]");
+        }
+        word0_ = (word0_ & ~(0x0FU << 12U)) | (static_cast<std::uint32_t>(value) << 12U);
     }
     void set_item_packing_field_size(std::uint8_t value) {
-        if (value == 0U) {
-            throw std::invalid_argument("item packing field size must be at least 1 bit");
+        if (value == 0U || value > 64U) {
+            throw std::invalid_argument("item packing field size must be in the range [1, 64]");
         }
-        const auto encoded = static_cast<std::uint32_t>((value - 1U) & 0x3FU);
+        const auto encoded = static_cast<std::uint32_t>(value - 1U);
         word0_ = (word0_ & ~(0x3FU << 6U)) | (encoded << 6U);
     }
     void set_data_item_size(std::uint8_t value) {
-        if (value == 0U) {
-            throw std::invalid_argument("data item size must be at least 1 bit");
+        if (value == 0U || value > 64U) {
+            throw std::invalid_argument("data item size must be in the range [1, 64]");
         }
-        word0_ = (word0_ & ~0x3FU) | static_cast<std::uint32_t>((value - 1U) & 0x3FU);
+        word0_ = (word0_ & ~0x3FU) | static_cast<std::uint32_t>(value - 1U);
     }
     void set_repeat_count(std::uint16_t value) {
         if (value == 0U) {

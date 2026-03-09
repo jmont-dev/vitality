@@ -2,12 +2,10 @@
 #define VITALITY_VITALITY_HPP
 
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <complex>
 #include <limits>
 #include <optional>
 #include <span>
@@ -23,110 +21,6 @@ namespace vitality {
 using byte = std::byte;
 using bytes_view = std::span<const byte>;
 using mutable_bytes_view = std::span<byte>;
-
-[[nodiscard]] constexpr bool host_is_big_endian() noexcept {
-    return std::endian::native == std::endian::big;
-}
-
-[[nodiscard]] constexpr bool host_is_little_endian() noexcept {
-    return std::endian::native == std::endian::little;
-}
-
-[[nodiscard]] constexpr std::uint16_t byteswap16(std::uint16_t value) noexcept {
-    return static_cast<std::uint16_t>(((value & 0x00FFu) << 8U) |
-                                      ((value & 0xFF00u) >> 8U));
-}
-
-[[nodiscard]] constexpr std::int16_t byteswap16(std::int16_t value) noexcept {
-    return static_cast<std::int16_t>(byteswap16(static_cast<std::uint16_t>(value)));
-}
-
-[[nodiscard]] constexpr std::uint32_t byteswap32(std::uint32_t value) noexcept {
-    return ((value & 0x000000FFu) << 24U) |
-           ((value & 0x0000FF00u) << 8U) |
-           ((value & 0x00FF0000u) >> 8U) |
-           ((value & 0xFF000000u) >> 24U);
-}
-
-[[nodiscard]] constexpr std::int32_t byteswap32(std::int32_t value) noexcept {
-    return static_cast<std::int32_t>(byteswap32(static_cast<std::uint32_t>(value)));
-}
-
-[[nodiscard]] constexpr std::uint64_t byteswap64(std::uint64_t value) noexcept {
-    return ((value & 0x00000000000000FFULL) << 56U) |
-           ((value & 0x000000000000FF00ULL) << 40U) |
-           ((value & 0x0000000000FF0000ULL) << 24U) |
-           ((value & 0x00000000FF000000ULL) << 8U) |
-           ((value & 0x000000FF00000000ULL) >> 8U) |
-           ((value & 0x0000FF0000000000ULL) >> 24U) |
-           ((value & 0x00FF000000000000ULL) >> 40U) |
-           ((value & 0xFF00000000000000ULL) >> 56U);
-}
-
-[[nodiscard]] constexpr std::int64_t byteswap64(std::int64_t value) noexcept {
-    return static_cast<std::int64_t>(byteswap64(static_cast<std::uint64_t>(value)));
-}
-
-namespace detail {
-
-template <typename T>
-struct is_std_complex : std::false_type {};
-
-template <typename T>
-struct is_std_complex<std::complex<T>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_std_complex_v = is_std_complex<T>::value;
-
-} // namespace detail
-
-template <typename T>
-[[nodiscard]] inline T byteswap(T value) noexcept {
-    using decayed = std::remove_cv_t<T>;
-
-    if constexpr (std::is_same_v<decayed, std::uint8_t> ||
-                  std::is_same_v<decayed, std::int8_t> ||
-                  std::is_same_v<decayed, char> ||
-                  std::is_same_v<decayed, unsigned char> ||
-                  std::is_same_v<decayed, std::byte>) {
-        return value;
-    } else if constexpr (std::is_same_v<decayed, std::uint16_t>) {
-        return byteswap16(value);
-    } else if constexpr (std::is_same_v<decayed, std::int16_t>) {
-        return byteswap16(value);
-    } else if constexpr (std::is_same_v<decayed, std::uint32_t>) {
-        return byteswap32(value);
-    } else if constexpr (std::is_same_v<decayed, std::int32_t>) {
-        return byteswap32(value);
-    } else if constexpr (std::is_same_v<decayed, std::uint64_t>) {
-        return byteswap64(value);
-    } else if constexpr (std::is_same_v<decayed, std::int64_t>) {
-        return byteswap64(value);
-    } else if constexpr (std::is_same_v<decayed, float>) {
-        return std::bit_cast<float>(byteswap32(std::bit_cast<std::uint32_t>(value)));
-    } else if constexpr (std::is_same_v<decayed, double>) {
-        return std::bit_cast<double>(byteswap64(std::bit_cast<std::uint64_t>(value)));
-    } else if constexpr (detail::is_std_complex_v<decayed>) {
-        using scalar = typename decayed::value_type;
-        return decayed{byteswap(static_cast<scalar>(value.real())),
-                       byteswap(static_cast<scalar>(value.imag()))};
-    } else {
-        static_assert(std::is_same_v<decayed, void>,
-                      "vitality::byteswap only supports standard 8/16/32/64-bit integers, float, double, std::complex<float>, and std::complex<double>");
-    }
-}
-
-template <typename T>
-inline void byteswap_inplace(T& value) noexcept {
-    value = byteswap(value);
-}
-
-template <typename T>
-inline void byteswap_inplace(std::span<T> values) noexcept {
-    for (auto& value : values) {
-        byteswap_inplace(value);
-    }
-}
 
 namespace detail {
 
@@ -1346,26 +1240,6 @@ using ParsedPacket = std::variant<SignalDataPacketView, ContextPacketView>;
 
 [[nodiscard]] inline bytes_view as_bytes_view(const std::vector<byte>& bytes) noexcept {
     return bytes_view{bytes.data(), bytes.size()};
-}
-
-template <typename T>
-[[nodiscard]] inline bytes_view as_bytes_view(std::span<const T> values) noexcept {
-    return std::as_bytes(values);
-}
-
-template <typename T>
-[[nodiscard]] inline bytes_view as_bytes_view(const std::vector<T>& values) noexcept {
-    return as_bytes_view(std::span<const T>{values.data(), values.size()});
-}
-
-template <typename T>
-[[nodiscard]] inline mutable_bytes_view as_writable_bytes_view(std::span<T> values) noexcept {
-    return std::as_writable_bytes(values);
-}
-
-template <typename T>
-[[nodiscard]] inline mutable_bytes_view as_writable_bytes_view(std::vector<T>& values) noexcept {
-    return as_writable_bytes_view(std::span<T>{values.data(), values.size()});
 }
 
 [[nodiscard]] inline std::vector<byte> from_u8(const std::vector<std::uint8_t>& bytes) {

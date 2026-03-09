@@ -12,19 +12,19 @@ int main() {
         {-3.0f, 4.0f},
     };
 
-    vita::signal::packet packet;
+    vita::packet::signal packet;
     packet.set_stream_id(0x12345678u);
     packet.set_payload_view(vita::as_bytes_view(tx_samples));
 
-    const std::vector<vita::byte> wire_bytes = packet.to_bytes();
-    const auto view = vita::signal::view::parse(vita::as_bytes_view(wire_bytes));
+    const auto wire_bytes = packet.to_bytes();
+    const auto view = vita::view::signal::parse(vita::as_bytes_view(wire_bytes));
 
     std::vector<std::complex<float>> rx_samples(view.payload().size() / sizeof(std::complex<float>));
     std::memcpy(rx_samples.data(), view.payload().data(), view.payload().size());
 
-    // VITA metadata words are handled as big-endian by Vitality.
-    // Payload bytes are exposed exactly as received. If the payload word order
-    // on the wire differs from your host representation, byteswap after copying.
+    // Vitality handles VITA metadata fields as big-endian automatically.
+    // Payload bytes are returned exactly as they arrived. If your payload word
+    // order differs from the host representation, byteswap after copying.
     // Example:
     // if (vita::host_is_little_endian()) {
     //     vita::byteswap_inplace(std::span<std::complex<float>>(rx_samples));

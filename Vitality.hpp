@@ -20,8 +20,6 @@
 
 namespace vita {
 
-namespace detail {
-
 using byte = std::byte;
 using bytes_view = std::span<const byte>;
 using mutable_bytes_view = std::span<byte>;
@@ -1386,61 +1384,38 @@ template <typename T>
     return out;
 }
 
-} // namespace detail
 
-using detail::byte;
-using detail::bytes_view;
-using detail::mutable_bytes_view;
 
-using detail::as_bytes_view;
-using detail::as_writable_bytes_view;
-using detail::from_u8;
-using detail::to_u8;
-
-using detail::byteswap;
-using detail::byteswap16;
-using detail::byteswap32;
-using detail::byteswap64;
-using detail::byteswap_inplace;
-using detail::host_is_big_endian;
-using detail::host_is_little_endian;
-
-using packet_type = detail::PacketType;
-using integer_timestamp_type = detail::IntegerTimestampType;
-using fractional_timestamp_type = detail::FractionalTimestampType;
-using parse_error_code = detail::ParseErrorCode;
-using parse_error = detail::ParseError;
-using class_id = detail::ClassId;
-using timestamp = detail::Timestamp;
-using trailer = detail::Trailer;
-using packet_header = detail::PacketHeader;
-using state_event_indicators = detail::StateEventIndicators;
-using signal_data_format = detail::SignalDataFormat;
-using real_complex_type = detail::RealComplexType;
-using data_item_format = detail::DataItemFormat;
-using packing_method = detail::PackingMethod;
+using class_id = ClassId;
+using timestamp = Timestamp;
+using trailer = Trailer;
+using packet_header = PacketHeader;
+using state_event_indicators = StateEventIndicators;
+using parse_error = ParseError;
+using parse_error_code = ParseErrorCode;
+using packet_type = PacketType;
+using integer_timestamp_type = IntegerTimestampType;
+using fractional_timestamp_type = FractionalTimestampType;
+using real_complex_type = RealComplexType;
+using data_item_format = DataItemFormat;
+using packing_method = PackingMethod;
 
 namespace signal {
-using packet = detail::SignalDataPacket;
-using view = detail::SignalDataPacketView;
-using format = detail::SignalDataFormat;
-using real_complex_type = detail::RealComplexType;
-using data_item_format = detail::DataItemFormat;
-using packing_method = detail::PackingMethod;
-} // namespace signal
+using format = SignalDataFormat;
+}
 
-namespace context {
-using packet = detail::ContextPacket;
-using view = detail::ContextPacketView;
-using cif0 = detail::ContextPacketView::SupportedCif0;
-} // namespace context
+namespace view {
+using signal = SignalDataPacketView;
+using context = ContextPacketView;
+}
 
 namespace packet {
-using header = detail::PacketHeader;
-using any = detail::ParsedPacket;
+using signal = SignalDataPacket;
+using context = ContextPacket;
+using parsed = ParsedPacket;
 
-[[nodiscard]] inline any parse(bytes_view packet_bytes) {
-    return detail::parse_packet(packet_bytes);
+[[nodiscard]] inline parsed parse(bytes_view packet) {
+    return parse_packet(packet);
 }
 } // namespace packet
 

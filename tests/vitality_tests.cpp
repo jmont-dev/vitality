@@ -195,6 +195,46 @@ TEST_CASE("packet parse dispatch returns the correct variant") {
     CHECK(std::holds_alternative<vita::view::signal>(sig_packet));
 }
 
+TEST_CASE("packet::dispatch invokes matching callback for signal and context views") {
+    bool signal_called = false;
+    bool context_called = false;
+
+    std::vector<vita::byte> payload = {vita::byte{0}, vita::byte{1}, vita::byte{2}, vita::byte{3}};
+    vita::packet::signal sig;
+    sig.set_stream_id(0x01020304u);
+    sig.set_payload_view(vita::bytes_view{payload.data(), payload.size()});
+    const auto sig_bytes = sig.to_bytes();
+
+    vita::packet::dispatch(
+        vita::as_bytes_view(sig_bytes),
+        [&](const vita::view::signal& view) {
+            signal_called = true;
+            CHECK(view.stream_id().has_value());
+        },
+        [&](const vita::view::context&) { context_called = true; });
+
+    CHECK(signal_called);
+    CHECK_FALSE(context_called);
+
+    signal_called = false;
+    context_called = false;
+
+    vita::packet::context ctx;
+    ctx.set_stream_id(0x12345678u);
+    const auto ctx_bytes = ctx.to_bytes();
+
+    vita::packet::dispatch(
+        vita::as_bytes_view(ctx_bytes),
+        [&](const vita::view::signal&) { signal_called = true; },
+        [&](const vita::view::context& view) {
+            context_called = true;
+            CHECK(view.stream_id().has_value());
+        });
+
+    CHECK_FALSE(signal_called);
+    CHECK(context_called);
+}
+
 TEST_CASE("byteswap helpers cover common wire types") {
     CHECK(vita::byteswap16(std::uint16_t{0x1234u}) == 0x3412u);
     CHECK(vita::byteswap32(std::uint32_t{0x11223344u}) == 0x44332211u);

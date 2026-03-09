@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1431,6 +1432,21 @@ using parsed = ParsedPacket;
 
 [[nodiscard]] inline parsed parse(bytes_view packet_bytes) {
     return parse_packet(packet_bytes);
+}
+
+template <typename SignalFn, typename ContextFn>
+decltype(auto) dispatch(bytes_view packet_bytes, SignalFn&& signal_fn, ContextFn&& context_fn) {
+    auto parsed_packet = parse(packet_bytes);
+    return std::visit(
+        [&](auto&& packet_view) -> decltype(auto) {
+            using packet_view_type = std::remove_cvref_t<decltype(packet_view)>;
+            if constexpr (std::is_same_v<packet_view_type, SignalDataPacketView>) {
+                return std::invoke(std::forward<SignalFn>(signal_fn), std::forward<decltype(packet_view)>(packet_view));
+            } else {
+                return std::invoke(std::forward<ContextFn>(context_fn), std::forward<decltype(packet_view)>(packet_view));
+            }
+        },
+        parsed_packet);
 }
 } // namespace packet
 

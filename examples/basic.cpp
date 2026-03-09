@@ -1,45 +1,39 @@
-#include <cstddef>
-#include <cstdint>
+#include <vitality/vitality.hpp>
+
+#include <complex>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
-#include "vitality/vitality.hpp"
-
 int main() {
-    using namespace vitality;
+    std::vector<std::complex<float>> tx_samples = {
+        {1.0f, -1.0f},
+        {2.5f, 0.25f},
+        {-3.0f, 4.0f},
+    };
 
-    ContextPacket ctx;
-    ctx.set_stream_id(0xDEADBEEFu);
-    ctx.set_change_indicator(true);
-    ctx.set_bandwidth_hz(8.0e6);
-    ctx.set_rf_reference_frequency_hz(100.0e6);
-    ctx.set_sample_rate_sps(10.0e6);
+    vita::signal::packet packet;
+    packet.set_stream_id(0x12345678u);
+    packet.set_payload_view(vita::as_bytes_view(tx_samples));
 
-    SignalDataFormat fmt;
-    fmt.set_packing_method(PackingMethod::ProcessingEfficient);
-    fmt.set_real_complex_type(RealComplexType::ComplexCartesian);
-    fmt.set_data_item_format(DataItemFormat::SignedFixedPoint);
-    fmt.set_data_item_size(16);
-    fmt.set_item_packing_field_size(16);
-    ctx.set_signal_data_format(fmt);
+    const std::vector<vita::byte> wire_bytes = packet.to_bytes();
+    const auto view = vita::signal::view::parse(vita::as_bytes_view(wire_bytes));
 
-    auto ctx_bytes = ctx.to_bytes();
-    auto parsed_ctx = std::get<ContextPacketView>(parse_packet(as_bytes_view(ctx_bytes)));
+    std::vector<std::complex<float>> rx_samples(view.payload().size() / sizeof(std::complex<float>));
+    std::memcpy(rx_samples.data(), view.payload().data(), view.payload().size());
 
-    std::cout << "context stream id = 0x" << std::hex << parsed_ctx.stream_id().value() << std::dec << "\n";
-    std::cout << "rf center = " << parsed_ctx.rf_reference_frequency_hz() << " Hz\n";
-    std::cout << "sample rate = " << parsed_ctx.sample_rate_sps() << " sps\n";
+    // VITA metadata words are handled as big-endian by Vitality.
+    // Payload bytes are exposed exactly as received. If the payload word order
+    // on the wire differs from your host representation, byteswap after copying.
+    // Example:
+    // if (vita::host_is_little_endian()) {
+    //     vita::byteswap_inplace(std::span<std::complex<float>>(rx_samples));
+    // }
 
-    std::vector<byte> iq(16);
-    for (std::size_t i = 0; i < iq.size(); ++i) {
-        iq[i] = static_cast<byte>(i);
+    std::cout << "stream id: 0x" << std::hex << view.stream_id().value_or(0) << std::dec << "\n";
+    for (const auto& sample : rx_samples) {
+        std::cout << sample.real() << ", " << sample.imag() << "\n";
     }
 
-    SignalDataPacket sig;
-    sig.set_stream_id(0xDEADBEEFu);
-    sig.set_payload_view(bytes_view{iq.data(), iq.size()});
-    auto sig_bytes = sig.to_bytes();
-
-    auto parsed_sig = std::get<SignalDataPacketView>(parse_packet(as_bytes_view(sig_bytes)));
-    std::cout << "signal payload bytes = " << parsed_sig.payload().size() << "\n";
+    return 0;
 }

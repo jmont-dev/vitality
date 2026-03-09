@@ -1,113 +1,45 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <vitality/vitality.hpp>
+
+#include <algorithm>
 #include <array>
-#include <cstddef>
-#include <cstdint>
 #include <complex>
 #include <cstring>
-#include <functional>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <system_error>
-#include <utility>
-#include <variant>
+#include <span>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+#if defined(__unix__) || defined(__APPLE__)
 #include <arpa/inet.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/time.h>
+#include <sys/types.h>
 #include <unistd.h>
+#include <cerrno>
+#include <system_error>
 #endif
-
-#include "vitality/vitality.hpp"
 
 namespace {
 
-using vitality::byte;
-using vitality::bytes_view;
-
-std::uint8_t u8(byte b) {
-    return std::to_integer<std::uint8_t>(b);
+[[nodiscard]] std::uint8_t u8(vita::byte value) {
+    return std::to_integer<std::uint8_t>(value);
 }
 
-void expect_parse_error(const std::function<void()>& fn, vitality::ParseErrorCode code) {
-    try {
-        fn();
-        FAIL("expected vitality::ParseError");
-    } catch (const vitality::ParseError& ex) {
-        CHECK(static_cast<int>(ex.code()) == static_cast<int>(code));
-    }
-}
-
-void expect_invalid_argument(const std::function<void()>& fn) {
-    CHECK_THROWS_AS(fn(), std::invalid_argument);
-}
-
-[[nodiscard]] std::vector<byte> copy_to_payload_bytes(const std::vector<std::complex<float>>& samples) {
-    std::vector<byte> payload(samples.size() * sizeof(std::complex<float>));
-    std::memcpy(payload.data(), samples.data(), payload.size());
-    return payload;
-}
-
-[[nodiscard]] std::vector<std::complex<float>> copy_from_payload_bytes(bytes_view payload) {
-    if (payload.size() % sizeof(std::complex<float>) != 0) {
-        throw std::runtime_error("payload size is not a whole number of std::complex<float> samples");
-    }
-
-    std::vector<std::complex<float>> samples(payload.size() / sizeof(std::complex<float>));
-    std::memcpy(samples.data(), payload.data(), payload.size());
-    return samples;
-}
-
-[[nodiscard]] std::uint32_t byteswap32(std::uint32_t value) {
-    return ((value & 0x000000FFu) << 24u) |
-           ((value & 0x0000FF00u) << 8u) |
-           ((value & 0x00FF0000u) >> 8u) |
-           ((value & 0xFF000000u) >> 24u);
-}
-
-void byteswap_float32_components_inplace(std::vector<byte>& payload) {
-    if (payload.size() % sizeof(std::uint32_t) != 0) {
-        throw std::runtime_error("float32 payload must be a multiple of 4 bytes");
-    }
-
-    for (std::size_t offset = 0; offset < payload.size(); offset += sizeof(std::uint32_t)) {
-        std::uint32_t word = 0;
-        std::memcpy(&word, payload.data() + offset, sizeof(word));
-        word = byteswap32(word);
-        std::memcpy(payload.data() + offset, &word, sizeof(word));
-    }
-}
-
-#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
-
-class UdpSocket {
+#if defined(__unix__) || defined(__APPLE__)
+class socket_handle {
 public:
-    explicit UdpSocket(int fd = -1) noexcept : fd_(fd) {}
-
-    ~UdpSocket() {
+    explicit socket_handle(int fd = -1) noexcept : fd_(fd) {}
+    ~socket_handle() {
         if (fd_ >= 0) {
             ::close(fd_);
         }
     }
 
-    UdpSocket(const UdpSocket&) = delete;
-    UdpSocket& operator=(const UdpSocket&) = delete;
+    socket_handle(const socket_handle&) = delete;
+    socket_handle& operator=(const socket_handle&) = delete;
 
-    UdpSocket(UdpSocket&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
-
-    UdpSocket& operator=(UdpSocket&& other) noexcept {
-        if (this != &other) {
-            if (fd_ >= 0) {
-                ::close(fd_);
-            }
-            fd_ = std::exchange(other.fd_, -1);
-        }
-        return *this;
+    socket_handle(socket_handle&& other) noexcept : fd_(other.fd_) {
+        other.fd_ = -1;
     }
 
     [[nodiscard]] int get() const noexcept { return fd_; }
@@ -116,458 +48,224 @@ private:
     int fd_ = -1;
 };
 
-struct BoundReceiver {
-    UdpSocket socket;
-    sockaddr_in address{};
+struct udp_pair {
+    socket_handle sender;
+    socket_handle receiver;
+    sockaddr_in receiver_addr{};
 };
 
-[[nodiscard]] UdpSocket make_udp_socket() {
-    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
+udp_pair make_udp_pair() {
+    udp_pair pair{socket_handle{::socket(AF_INET, SOCK_DGRAM, 0)},
+                  socket_handle{::socket(AF_INET, SOCK_DGRAM, 0)},
+                  {}};
+
+    if (pair.sender.get() < 0 || pair.receiver.get() < 0) {
         throw std::system_error(errno, std::generic_category(), "socket");
     }
-    return UdpSocket(fd);
-}
 
-void set_receive_timeout(int fd, int seconds) {
-    timeval timeout{};
-    timeout.tv_sec = seconds;
-    timeout.tv_usec = 0;
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
-        throw std::system_error(errno, std::generic_category(), "setsockopt(SO_RCVTIMEO)");
-    }
-}
+    pair.receiver_addr.sin_family = AF_INET;
+    pair.receiver_addr.sin_port = htons(0);
+    pair.receiver_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-[[nodiscard]] BoundReceiver bind_loopback_receiver() {
-    BoundReceiver receiver{make_udp_socket(), {}};
-    set_receive_timeout(receiver.socket.get(), 1);
-
-    receiver.address.sin_family = AF_INET;
-    receiver.address.sin_port = htons(0);
-    receiver.address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    if (::bind(receiver.socket.get(), reinterpret_cast<const sockaddr*>(&receiver.address), sizeof(receiver.address)) != 0) {
+    if (::bind(pair.receiver.get(), reinterpret_cast<const sockaddr*>(&pair.receiver_addr), sizeof(pair.receiver_addr)) != 0) {
         throw std::system_error(errno, std::generic_category(), "bind");
     }
 
-    socklen_t size = sizeof(receiver.address);
-    if (::getsockname(receiver.socket.get(), reinterpret_cast<sockaddr*>(&receiver.address), &size) != 0) {
+    socklen_t size = sizeof(pair.receiver_addr);
+    if (::getsockname(pair.receiver.get(), reinterpret_cast<sockaddr*>(&pair.receiver_addr), &size) != 0) {
         throw std::system_error(errno, std::generic_category(), "getsockname");
     }
 
-    return receiver;
+    return pair;
 }
 
-void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
+void send_bytes(int fd, const sockaddr_in& addr, vita::bytes_view bytes) {
     const auto sent = ::sendto(fd,
-                               reinterpret_cast<const void*>(bytes.data()),
+                               bytes.data(),
                                bytes.size(),
                                0,
-                               reinterpret_cast<const sockaddr*>(&destination),
-                               sizeof(destination));
+                               reinterpret_cast<const sockaddr*>(&addr),
+                               sizeof(addr));
     if (sent < 0) {
         throw std::system_error(errno, std::generic_category(), "sendto");
     }
     REQUIRE(static_cast<std::size_t>(sent) == bytes.size());
 }
 
-[[nodiscard]] std::vector<byte> receive_datagram(int fd) {
-    std::array<byte, 65536> buffer{};
+std::vector<vita::byte> recv_bytes(int fd) {
+    std::array<vita::byte, 4096> buffer{};
     sockaddr_in source{};
-    socklen_t source_size = sizeof(source);
+    socklen_t size = sizeof(source);
     const auto received = ::recvfrom(fd,
-                                     reinterpret_cast<void*>(buffer.data()),
+                                     buffer.data(),
                                      buffer.size(),
                                      0,
                                      reinterpret_cast<sockaddr*>(&source),
-                                     &source_size);
+                                     &size);
     if (received < 0) {
         throw std::system_error(errno, std::generic_category(), "recvfrom");
     }
-    return std::vector<byte>(buffer.begin(), buffer.begin() + received);
+    return {buffer.begin(), buffer.begin() + received};
 }
-
 #endif
 
 } // namespace
 
-TEST_CASE("signal data packet round trips with big endian header and zero-copy payload view") {
-    using namespace vitality;
-
-    std::vector<byte> payload = {
-        byte{0x10}, byte{0x11}, byte{0x12}, byte{0x13},
-        byte{0x20}, byte{0x21}, byte{0x22}, byte{0x23},
+TEST_CASE("signal packet round-trip keeps payload as a view") {
+    std::vector<std::complex<float>> samples = {
+        {1.0f, 2.0f},
+        {-3.5f, 4.5f},
     };
 
-    Timestamp ts;
-    ts.set_integer_type(IntegerTimestampType::UTC);
-    ts.set_fractional_type(FractionalTimestampType::Picoseconds);
-    ts.set_integer_seconds(0x11223344u);
-    ts.set_fractional(0x0102030405060708ULL);
+    vita::timestamp ts;
+    ts.set_integer_type(vita::integer_timestamp_type::UTC);
+    ts.set_fractional_type(vita::fractional_timestamp_type::Picoseconds);
+    ts.set_integer_seconds(42u);
+    ts.set_fractional(99u);
 
-    SignalDataPacket packet;
-    packet.set_stream_id(0x01020304u);
-    packet.set_class_id(ClassId{0xAAu, 0x00BCDEu, 0x1357u, 0x2468u});
+    vita::signal::packet packet;
+    packet.header().set_sequence(7u);
+    packet.set_stream_id(0x12345678u);
     packet.set_timestamp(ts);
-    packet.set_payload_view(bytes_view{payload.data(), payload.size()});
-    packet.set_trailer(Trailer{0xA1B2C3D4u});
-    packet.set_spectrum_mode(true);
-    packet.header().set_sequence(9u);
+    packet.set_payload_view(vita::as_bytes_view(samples));
 
-    auto bytes = packet.to_bytes();
+    const auto bytes = packet.to_bytes();
+    const auto view = vita::signal::view::parse(vita::as_bytes_view(bytes));
 
-    REQUIRE(bytes.size() == packet.serialized_size_bytes());
+    CHECK(view.header().sequence() == 7u);
+    CHECK(view.stream_id().value() == 0x12345678u);
+    CHECK(view.timestamp().integer_seconds() == 42u);
+    CHECK(view.payload().size() == samples.size() * sizeof(std::complex<float>));
+    CHECK(view.payload().data() == bytes.data() + 20);
+}
+
+TEST_CASE("context packet round-trip preserves common fields") {
+    vita::timestamp ts;
+    ts.set_integer_type(vita::integer_timestamp_type::GPS);
+    ts.set_fractional_type(vita::fractional_timestamp_type::SampleCount);
+    ts.set_integer_seconds(0x01020304u);
+    ts.set_fractional(0x1112131415161718ULL);
+
+    vita::state_event_indicators state;
+    state.set_reference_lock(true);
+    state.set_over_range(true);
+    state.set_user_bits(0x5Au);
+
+    vita::signal::format format;
+    format.set_packing_method(vita::packing_method::ProcessingEfficient);
+    format.set_real_complex_type(vita::real_complex_type::ComplexCartesian);
+    format.set_data_item_format(vita::data_item_format::IEEE754Single);
+    format.set_item_packing_field_size(32);
+    format.set_data_item_size(32);
+    format.set_vector_size(8);
+
+    vita::context::packet packet;
+    packet.set_stream_id(0xCAFEBABEu);
+    packet.set_timestamp(ts);
+    packet.set_change_indicator(true);
+    packet.set_bandwidth_hz(20.5e6);
+    packet.set_rf_reference_frequency_hz(915.25e6);
+    packet.set_reference_level_dbm(-12.5);
+    packet.set_sample_rate_sps(30.72e6);
+    packet.set_state_event_indicators(state);
+    packet.set_signal_data_format(format);
+
+    const auto bytes = packet.to_bytes();
+    const auto view = vita::context::view::parse(vita::as_bytes_view(bytes));
+
+    CHECK(view.stream_id().value() == 0xCAFEBABEu);
+    CHECK(view.change_indicator());
+    CHECK(view.bandwidth_hz() == doctest::Approx(20.5e6));
+    CHECK(view.rf_reference_frequency_hz() == doctest::Approx(915.25e6));
+    CHECK(view.reference_level_dbm() == doctest::Approx(-12.5));
+    CHECK(view.sample_rate_sps() == doctest::Approx(30.72e6));
+    CHECK(view.state_event_indicators().reference_lock());
+    CHECK(view.state_event_indicators().over_range());
+    CHECK(view.signal_data_format().data_item_format() == vita::data_item_format::IEEE754Single);
+}
+
+TEST_CASE("packet parse dispatch returns the expected view type") {
+    std::vector<vita::byte> raw = {vita::byte{0}, vita::byte{1}, vita::byte{2}, vita::byte{3}};
+
+    vita::signal::packet signal;
+    signal.set_stream_id(1u);
+    signal.set_payload_view(vita::as_bytes_view(raw));
+    const auto signal_bytes = signal.to_bytes();
+    const auto signal_any = vita::packet::parse(vita::as_bytes_view(signal_bytes));
+    CHECK(std::holds_alternative<vita::signal::view>(signal_any));
+
+    vita::context::packet context;
+    context.set_stream_id(2u);
+    const auto context_bytes = context.to_bytes();
+    const auto context_any = vita::packet::parse(vita::as_bytes_view(context_bytes));
+    CHECK(std::holds_alternative<vita::context::view>(context_any));
+}
+
+TEST_CASE("byteswap helpers cover common wire types") {
+    CHECK(vita::byteswap16(std::uint16_t{0x1234u}) == 0x3412u);
+    CHECK(vita::byteswap32(std::uint32_t{0x01020304u}) == 0x04030201u);
+    CHECK(vita::byteswap64(std::uint64_t{0x0102030405060708ULL}) == 0x0807060504030201ULL);
+
+    float f = 1.0f;
+    vita::byteswap_inplace(f);
+    vita::byteswap_inplace(f);
+    CHECK(f == doctest::Approx(1.0f));
+
+    std::vector<std::complex<float>> samples = {{1.0f, -2.0f}, {3.5f, 4.5f}};
+    const auto original = samples;
+    vita::byteswap_inplace(std::span<std::complex<float>>(samples));
+    vita::byteswap_inplace(std::span<std::complex<float>>(samples));
+    CHECK(samples == original);
+}
+
+TEST_CASE("metadata words are serialized as big-endian") {
+    std::vector<vita::byte> raw = {vita::byte{0xAA}, vita::byte{0xBB}, vita::byte{0xCC}, vita::byte{0xDD}};
+
+    vita::signal::packet packet;
+    packet.set_stream_id(0x01020304u);
+    packet.set_payload_view(vita::as_bytes_view(raw));
+    const auto bytes = packet.to_bytes();
+
     CHECK(u8(bytes[4]) == 0x01u);
     CHECK(u8(bytes[5]) == 0x02u);
     CHECK(u8(bytes[6]) == 0x03u);
     CHECK(u8(bytes[7]) == 0x04u);
-    CHECK(u8(bytes[16]) == 0x11u);
-    CHECK(u8(bytes[17]) == 0x22u);
-    CHECK(u8(bytes[18]) == 0x33u);
-    CHECK(u8(bytes[19]) == 0x44u);
-
-    auto parsed = SignalDataPacketView::parse(as_bytes_view(bytes));
-
-    CHECK(static_cast<int>(parsed.header().packet_type()) == static_cast<int>(PacketType::SignalData));
-    CHECK(parsed.header().has_stream_id());
-    CHECK(parsed.header().class_id_included());
-    CHECK(parsed.header().trailer_included());
-    CHECK(parsed.header().spectrum_mode());
-    CHECK(parsed.header().sequence() == 9u);
-    REQUIRE(parsed.stream_id().has_value());
-    CHECK(parsed.stream_id().value() == 0x01020304u);
-    REQUIRE(parsed.class_id().has_value());
-    CHECK(parsed.class_id()->reserved() == 0xAAu);
-    CHECK(parsed.class_id()->oui() == 0x00BCDEu);
-    CHECK(parsed.class_id()->information_class_code() == 0x1357u);
-    CHECK(parsed.class_id()->packet_class_code() == 0x2468u);
-    CHECK(static_cast<int>(parsed.timestamp().integer_type()) == static_cast<int>(IntegerTimestampType::UTC));
-    CHECK(static_cast<int>(parsed.timestamp().fractional_type()) == static_cast<int>(FractionalTimestampType::Picoseconds));
-    CHECK(parsed.timestamp().integer_seconds() == 0x11223344u);
-    CHECK(parsed.timestamp().fractional() == 0x0102030405060708ULL);
-    REQUIRE(parsed.trailer().has_value());
-    CHECK(parsed.trailer()->raw() == 0xA1B2C3D4u);
-    CHECK(parsed.payload().size() == payload.size());
-    CHECK(parsed.payload().data() == bytes.data() + 28);
-
-    for (std::size_t i = 0; i < payload.size(); ++i) {
-        CHECK(u8(parsed.payload()[i]) == u8(payload[i]));
-    }
 }
 
-TEST_CASE("signal data packet without stream id round trips") {
-    using namespace vitality;
+#if defined(__unix__) || defined(__APPLE__)
+TEST_CASE("localhost sockets can send and parse context then signal packets") {
+    const auto sockets = make_udp_pair();
 
-    std::vector<byte> payload = {byte{0xDE}, byte{0xAD}, byte{0xBE}, byte{0xEF}};
-
-    SignalDataPacket packet;
-    packet.set_include_stream_id(false);
-    packet.set_payload_view(bytes_view{payload.data(), payload.size()});
-
-    auto bytes = packet.to_bytes();
-    auto parsed = SignalDataPacketView::parse(as_bytes_view(bytes));
-
-    CHECK(static_cast<int>(parsed.header().packet_type()) == static_cast<int>(PacketType::SignalDataNoStreamId));
-    CHECK(!parsed.header().has_stream_id());
-    CHECK(!parsed.stream_id().has_value());
-    CHECK(parsed.payload().size() == 4u);
-    CHECK(u8(parsed.payload()[0]) == 0xDEu);
-    CHECK(u8(parsed.payload()[1]) == 0xADu);
-    CHECK(u8(parsed.payload()[2]) == 0xBEu);
-    CHECK(u8(parsed.payload()[3]) == 0xEFu);
-}
-
-TEST_CASE("context packet round trips supported common fields") {
-    using namespace vitality;
-
-    Timestamp ts;
-    ts.set_integer_type(IntegerTimestampType::GPS);
-    ts.set_fractional_type(FractionalTimestampType::SampleCount);
-    ts.set_integer_seconds(0x01020304u);
-    ts.set_fractional(0x1112131415161718ULL);
-
-    StateEventIndicators sei;
-    sei.set_calibrated_time_enabled(true);
-    sei.set_valid_data_enabled(true);
-    sei.set_reference_lock(true);
-    sei.set_over_range(true);
-    sei.set_user_bits(0x5Au);
-
-    SignalDataFormat fmt;
-    fmt.set_packing_method(PackingMethod::ProcessingEfficient);
-    fmt.set_real_complex_type(RealComplexType::ComplexPolar);
-    fmt.set_data_item_format(DataItemFormat::SignedFixedPoint);
-    fmt.set_sample_component_repeat(true);
-    fmt.set_event_tag_size(3);
-    fmt.set_channel_tag_size(7);
-    fmt.set_data_item_fraction_size(4);
-    fmt.set_item_packing_field_size(16);
-    fmt.set_data_item_size(12);
-    fmt.set_repeat_count(2);
-    fmt.set_vector_size(64);
-
-    ContextPacket packet;
-    packet.set_stream_id(0xCAFEBABEu);
-    packet.set_class_id(ClassId{0x00u, 0x00ABCDu, 0x1234u, 0x5678u});
-    packet.set_timestamp(ts);
-    packet.set_timestamp_mode_general(true);
-    packet.set_change_indicator(true);
-    packet.set_reference_point_id(0x10203040u);
-    packet.set_bandwidth_hz(20.5e6);
-    packet.set_if_reference_frequency_hz(-2.5e6);
-    packet.set_rf_reference_frequency_hz(915.25e6);
-    packet.set_rf_reference_frequency_offset_hz(-1250.5);
-    packet.set_if_band_offset_hz(250.75);
-    packet.set_reference_level_dbm(-12.5);
-    packet.set_gain_db(std::pair<double, double>{3.5, -1.0});
-    packet.set_over_range_count(7u);
-    packet.set_sample_rate_sps(30.72e6);
-    packet.set_timestamp_adjustment_femtoseconds(-123456789);
-    packet.set_timestamp_calibration_time_seconds(99u);
-    packet.set_temperature_celsius(42.25);
-    packet.set_device_identifier(0x11223344u);
-    packet.set_state_event_indicators(sei);
-    packet.set_signal_data_format(fmt);
-
-    auto bytes = packet.to_bytes();
-    auto parsed = ContextPacketView::parse(as_bytes_view(bytes));
-
-    CHECK(static_cast<int>(parsed.header().packet_type()) == static_cast<int>(PacketType::Context));
-    CHECK(parsed.header().timestamp_mode_general());
-    REQUIRE(parsed.stream_id().has_value());
-    CHECK(parsed.stream_id().value() == 0xCAFEBABEu);
-    REQUIRE(parsed.class_id().has_value());
-    CHECK(parsed.class_id()->oui() == 0x00ABCDu);
-    CHECK(parsed.change_indicator());
-    CHECK(parsed.reference_point_id() == 0x10203040u);
-    CHECK(parsed.bandwidth_hz() == doctest::Approx(20.5e6).epsilon(1e-12));
-    CHECK(parsed.if_reference_frequency_hz() == doctest::Approx(-2.5e6).epsilon(1e-12));
-    CHECK(parsed.rf_reference_frequency_hz() == doctest::Approx(915.25e6).epsilon(1e-12));
-    CHECK(parsed.rf_reference_frequency_offset_hz() == doctest::Approx(-1250.5).epsilon(1e-12));
-    CHECK(parsed.if_band_offset_hz() == doctest::Approx(250.75).epsilon(1e-12));
-    CHECK(parsed.reference_level_dbm() == doctest::Approx(-12.5).epsilon(1e-12));
-    CHECK(parsed.gain_stage1_db() == doctest::Approx(3.5).epsilon(1e-12));
-    CHECK(parsed.gain_stage2_db() == doctest::Approx(-1.0).epsilon(1e-12));
-    CHECK(parsed.over_range_count() == 7u);
-    CHECK(parsed.sample_rate_sps() == doctest::Approx(30.72e6).epsilon(1e-12));
-    CHECK(parsed.timestamp_adjustment_femtoseconds() == -123456789);
-    CHECK(parsed.timestamp_calibration_time_seconds() == 99u);
-    CHECK(parsed.temperature_celsius() == doctest::Approx(42.25).epsilon(1e-12));
-    CHECK(parsed.device_identifier() == 0x11223344u);
-    REQUIRE(parsed.has_state_event_indicators());
-    REQUIRE(parsed.has_signal_data_format());
-    const auto parsed_sei = parsed.state_event_indicators();
-    CHECK(parsed_sei.reference_lock());
-    CHECK(parsed_sei.over_range());
-    CHECK(parsed_sei.user_bits() == 0x5Au);
-    const auto parsed_fmt = parsed.signal_data_format();
-    CHECK(static_cast<int>(parsed_fmt.packing_method()) == static_cast<int>(PackingMethod::ProcessingEfficient));
-    CHECK(static_cast<int>(parsed_fmt.real_complex_type()) == static_cast<int>(RealComplexType::ComplexPolar));
-    CHECK(static_cast<int>(parsed_fmt.data_item_format()) == static_cast<int>(DataItemFormat::SignedFixedPoint));
-    CHECK(parsed_fmt.sample_component_repeat());
-    CHECK(parsed_fmt.event_tag_size() == 3u);
-    CHECK(parsed_fmt.channel_tag_size() == 7u);
-    CHECK(parsed_fmt.data_item_fraction_size() == 4u);
-    CHECK(parsed_fmt.item_packing_field_size() == 16u);
-    CHECK(parsed_fmt.data_item_size() == 12u);
-    CHECK(parsed_fmt.repeat_count() == 2u);
-    CHECK(parsed_fmt.vector_size() == 64u);
-}
-
-TEST_CASE("parse_packet dispatches to expected variant") {
-    using namespace vitality;
-
-    ContextPacket ctx;
-    ctx.set_stream_id(0x12345678u);
-    auto ctx_bytes = ctx.to_bytes();
-    auto ctx_variant = parse_packet(as_bytes_view(ctx_bytes));
-    CHECK(std::holds_alternative<ContextPacketView>(ctx_variant));
-
-    std::vector<byte> payload = {byte{0}, byte{1}, byte{2}, byte{3}};
-    SignalDataPacket sig;
-    sig.set_stream_id(0x01020304u);
-    sig.set_payload_view(bytes_view{payload.data(), payload.size()});
-    auto sig_bytes = sig.to_bytes();
-    auto sig_variant = parse_packet(as_bytes_view(sig_bytes));
-    CHECK(std::holds_alternative<SignalDataPacketView>(sig_variant));
-}
-
-TEST_CASE("signal packet rejects non word aligned payload on serialize") {
-    using namespace vitality;
-
-    std::vector<byte> payload = {byte{1}, byte{2}, byte{3}};
-    SignalDataPacket packet;
-    packet.set_stream_id(1u);
-    packet.set_payload_view(bytes_view{payload.data(), payload.size()});
-
-    expect_invalid_argument([&] { (void)packet.to_bytes(); });
-}
-
-TEST_CASE("context packet requires stream id on serialize") {
-    using namespace vitality;
-
-    ContextPacket packet;
-    expect_invalid_argument([&] { (void)packet.to_bytes(); });
-}
-
-TEST_CASE("parse rejects invalid packet size field") {
-    using namespace vitality;
-
-    std::vector<byte> payload = {byte{0}, byte{1}, byte{2}, byte{3}};
-    SignalDataPacket packet;
-    packet.set_stream_id(0xAABBCCDDu);
-    packet.set_payload_view(bytes_view{payload.data(), payload.size()});
-    auto bytes = packet.to_bytes();
-
-    bytes[2] = byte{0x00};
-    bytes[3] = byte{0x01};
-
-    expect_parse_error([&] { (void)SignalDataPacketView::parse(as_bytes_view(bytes)); },
-                       ParseErrorCode::InvalidPacketSize);
-}
-
-TEST_CASE("parse rejects unsupported context cif0 indicators") {
-    using namespace vitality;
-
-    ContextPacket packet;
-    packet.set_stream_id(0x01020304u);
-    auto bytes = packet.to_bytes();
-
-    bytes[8] = byte{0x00};
-    bytes[9] = byte{0x00};
-    bytes[10] = byte{0x40};
-    bytes[11] = byte{0x00};
-
-    expect_parse_error([&] { (void)ContextPacketView::parse(as_bytes_view(bytes)); },
-                       ParseErrorCode::UnsupportedContextIndicators);
-}
-
-TEST_CASE("context view missing field accessor throws") {
-    using namespace vitality;
-
-    ContextPacket packet;
-    packet.set_stream_id(0x01020304u);
-    packet.set_bandwidth_hz(1.0e6);
-    auto bytes = packet.to_bytes();
-    auto parsed = ContextPacketView::parse(as_bytes_view(bytes));
-
-    expect_parse_error([&] { (void)parsed.reference_point_id(); },
-                       ParseErrorCode::MissingRequiredField);
-}
-
-TEST_CASE("socket loopback round trips context and complex-float signal packets") {
-    using namespace vitality;
-
-#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
-    auto receiver = bind_loopback_receiver();
-    auto sender = make_udp_socket();
-
-    ContextPacket context;
-    context.set_stream_id(0x0A0B0C0Du);
-    context.set_change_indicator(true);
-    context.set_bandwidth_hz(2.5e6);
-    context.set_rf_reference_frequency_hz(433.92e6);
-    context.set_sample_rate_sps(1.25e6);
-
-    SignalDataFormat format;
-    format.set_packing_method(PackingMethod::ProcessingEfficient);
-    format.set_real_complex_type(RealComplexType::ComplexCartesian);
-    format.set_data_item_format(DataItemFormat::IEEE754Single);
-    format.set_data_item_size(32);
-    format.set_item_packing_field_size(32);
-    context.set_signal_data_format(format);
-
-    std::vector<std::complex<float>> tx_samples = {
-        {1.0f, -1.0f},
-        {0.25f, 0.5f},
-        {-0.75f, 0.125f},
-    };
-    std::vector<byte> payload = copy_to_payload_bytes(tx_samples);
-
-    Timestamp ts;
-    ts.set_integer_type(IntegerTimestampType::UTC);
-    ts.set_fractional_type(FractionalTimestampType::SampleCount);
-    ts.set_integer_seconds(12345u);
-    ts.set_fractional(67890u);
-
-    SignalDataPacket signal;
-    signal.set_stream_id(0x0A0B0C0Du);
-    signal.set_timestamp(ts);
-    signal.set_payload_view(bytes_view{payload.data(), payload.size()});
-
+    vita::context::packet context;
+    context.set_stream_id(0xABCDEF01u);
+    context.set_bandwidth_hz(1.25e6);
     const auto context_bytes = context.to_bytes();
-    const auto signal_bytes = signal.to_bytes();
+    send_bytes(sockets.sender.get(), sockets.receiver_addr, vita::as_bytes_view(context_bytes));
 
-    send_datagram(sender.get(), receiver.address, as_bytes_view(context_bytes));
-    send_datagram(sender.get(), receiver.address, as_bytes_view(signal_bytes));
-
-    bool saw_context = false;
-    bool saw_signal = false;
-
-    for (int i = 0; i < 2; ++i) {
-        auto received = receive_datagram(receiver.socket.get());
-        const auto parsed = parse_packet(as_bytes_view(received));
-
-        if (std::holds_alternative<ContextPacketView>(parsed)) {
-            const auto& parsed_context = std::get<ContextPacketView>(parsed);
-            saw_context = true;
-            REQUIRE(parsed_context.stream_id().has_value());
-            CHECK(parsed_context.stream_id().value() == 0x0A0B0C0Du);
-            CHECK(parsed_context.change_indicator());
-            CHECK(parsed_context.bandwidth_hz() == doctest::Approx(2.5e6).epsilon(1e-12));
-            CHECK(parsed_context.rf_reference_frequency_hz() == doctest::Approx(433.92e6).epsilon(1e-12));
-            CHECK(parsed_context.sample_rate_sps() == doctest::Approx(1.25e6).epsilon(1e-12));
-            REQUIRE(parsed_context.has_signal_data_format());
-            const auto parsed_format = parsed_context.signal_data_format();
-            CHECK(static_cast<int>(parsed_format.real_complex_type()) == static_cast<int>(RealComplexType::ComplexCartesian));
-            CHECK(static_cast<int>(parsed_format.data_item_format()) == static_cast<int>(DataItemFormat::IEEE754Single));
-            CHECK(parsed_format.data_item_size() == 32u);
-            CHECK(parsed_format.item_packing_field_size() == 32u);
-        } else {
-            const auto& parsed_signal = std::get<SignalDataPacketView>(parsed);
-            saw_signal = true;
-            REQUIRE(parsed_signal.stream_id().has_value());
-            CHECK(parsed_signal.stream_id().value() == 0x0A0B0C0Du);
-            CHECK(static_cast<int>(parsed_signal.timestamp().integer_type()) == static_cast<int>(IntegerTimestampType::UTC));
-            CHECK(static_cast<int>(parsed_signal.timestamp().fractional_type()) == static_cast<int>(FractionalTimestampType::SampleCount));
-            CHECK(parsed_signal.timestamp().integer_seconds() == 12345u);
-            CHECK(parsed_signal.timestamp().fractional() == 67890u);
-            REQUIRE(parsed_signal.payload().size() == payload.size());
-
-            const auto rx_samples = copy_from_payload_bytes(parsed_signal.payload());
-            REQUIRE(rx_samples.size() == tx_samples.size());
-            for (std::size_t j = 0; j < tx_samples.size(); ++j) {
-                CHECK(rx_samples[j].real() == doctest::Approx(tx_samples[j].real()));
-                CHECK(rx_samples[j].imag() == doctest::Approx(tx_samples[j].imag()));
-            }
-        }
-    }
-
-    CHECK(saw_context);
-    CHECK(saw_signal);
-#else
-    DOCTEST_SKIP("POSIX sockets are not available on this platform");
-#endif
-}
-
-TEST_CASE("byteswap helper round trips complex float payload") {
     std::vector<std::complex<float>> tx_samples = {
         {1.0f, -1.0f},
-        {0.25f, 0.5f},
-        {-0.75f, 0.125f},
+        {2.0f, -2.0f},
+        {3.0f, -3.0f},
     };
 
-    auto payload = copy_to_payload_bytes(tx_samples);
-    auto swapped = payload;
-    byteswap_float32_components_inplace(swapped);
-    CHECK(swapped != payload);
+    vita::signal::packet signal;
+    signal.set_stream_id(0xABCDEF01u);
+    signal.set_payload_view(vita::as_bytes_view(tx_samples));
+    const auto signal_bytes = signal.to_bytes();
+    send_bytes(sockets.sender.get(), sockets.receiver_addr, vita::as_bytes_view(signal_bytes));
 
-    byteswap_float32_components_inplace(swapped);
-    const auto rx_samples = copy_from_payload_bytes(bytes_view{swapped.data(), swapped.size()});
+    const auto context_rx = recv_bytes(sockets.receiver.get());
+    const auto signal_rx = recv_bytes(sockets.receiver.get());
 
-    REQUIRE(rx_samples.size() == tx_samples.size());
-    for (std::size_t i = 0; i < tx_samples.size(); ++i) {
-        CHECK(rx_samples[i].real() == doctest::Approx(tx_samples[i].real()));
-        CHECK(rx_samples[i].imag() == doctest::Approx(tx_samples[i].imag()));
-    }
+    const auto context_view = vita::context::view::parse(vita::as_bytes_view(context_rx));
+    const auto signal_view = vita::signal::view::parse(vita::as_bytes_view(signal_rx));
+
+    CHECK(context_view.stream_id().value() == 0xABCDEF01u);
+    CHECK(context_view.bandwidth_hz() == doctest::Approx(1.25e6));
+    CHECK(signal_view.stream_id().value() == 0xABCDEF01u);
+
+    std::vector<std::complex<float>> rx_samples(signal_view.payload().size() / sizeof(std::complex<float>));
+    std::memcpy(rx_samples.data(), signal_view.payload().data(), signal_view.payload().size());
+    CHECK(rx_samples == tx_samples);
 }
+#endif

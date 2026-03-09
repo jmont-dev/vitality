@@ -19,6 +19,9 @@ if(UNIX)
 
     add_executable(vitality_dispatch_example examples/dispatch.cpp)
     target_link_libraries(vitality_dispatch_example PRIVATE Vitality)
+
+    add_executable(vitality_asio_multicast_dispatch_example EXCLUDE_FROM_ALL examples/asio_multicast_dispatch.cpp)
+    target_link_libraries(vitality_asio_multicast_dispatch_example PRIVATE Vitality)
 endif()
 
 add_executable(vitality_tests tests/vitality_tests.cpp)

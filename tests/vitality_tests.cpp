@@ -213,6 +213,16 @@ TEST_CASE("byteswap helpers cover common wire types") {
     CHECK(samples[1].imag() == doctest::Approx(4.25f));
 }
 
+
+TEST_CASE("signal data format setters reject out-of-range values") {
+    vita::signal::format fmt;
+    CHECK_THROWS_AS(fmt.set_event_tag_size(8u), std::invalid_argument);
+    CHECK_THROWS_AS(fmt.set_channel_tag_size(16u), std::invalid_argument);
+    CHECK_THROWS_AS(fmt.set_data_item_fraction_size(16u), std::invalid_argument);
+    CHECK_THROWS_AS(fmt.set_item_packing_field_size(65u), std::invalid_argument);
+    CHECK_THROWS_AS(fmt.set_data_item_size(65u), std::invalid_argument);
+}
+
 TEST_CASE("signal packet rejects non-word-aligned payloads") {
     std::vector<vita::byte> payload = {vita::byte{1}, vita::byte{2}, vita::byte{3}};
     vita::packet::signal packet;

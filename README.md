@@ -1,11 +1,78 @@
-# Vitality
+# Vitality - Header-only VITA 49.2 support in C++
 
-Vitality is a small header-only C++ library for working with common **VITA 49.2** signal-data and context packets.
+Vitality is a small header-only C++20-26 library for working with signal and context packets from the **VITA 49.2** radio standard. This standard defines common wire formats for interfacing with software-defined radios.
 
 It is designed around two goals:
 
 - **Usability**: typed getters and setters for common fields instead of manual bit twiddling.
 - **Performance**: parsing uses **views** over the original byte buffer so payloads are not copied unless you explicitly copy them.
+
+## Example usage
+
+### Create a signal packet
+```C++
+    // Define a vector to hold IQ samples
+    std::vector<std::complex<float>> tx_samples = {
+        {1.0f, -1.0f},
+        {2.5f, 0.25f},
+    };
+
+    // Create a signal packet and assign the payload
+    vita::packet::signal signal_packet;
+    signal_packet.set_stream_id(0x12345678u);
+    signal_packet.set_payload_view(vita::as_bytes_view(tx_samples));
+    
+    // Send these bytes on your socket
+    const auto signal_wire_bytes = signal_packet.to_bytes();
+```
+### Create a context packet
+```C++
+    // Create a context packet and set metadata fields
+    vita::packet::context context_packet;
+    context_packet.set_stream_id(0xABCDEF01u);
+    context_packet.set_change_indicator(true);
+    context_packet.set_sample_rate_sps(30.72e6);
+    context_packet.set_temperature_celsius(41.5);
+
+    // Send these bytes on your socket
+    const auto context_wire_bytes = context_packet.to_bytes();
+```
+
+### Handle signal or context packets
+```C++
+
+    struct PacketHandler {
+        void on_signal(const vita::view::signal& view) const {
+            std::vector<std::complex<float>> samples(view.payload().size() / sizeof(std::complex<float>));
+            std::memcpy(samples.data(), view.payload().data(), view.payload().size());
+
+            std::cout << "signal stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec << "\n";
+            for (const auto& sample : samples) {
+                std::cout << "  " << sample.real() << ", " << sample.imag() << "\n";
+            }
+        }
+
+        void on_context(const vita::view::context& view) const {
+            std::cout << "context stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec
+                    << ", sample-rate=" << (view.has_sample_rate_sps() ? "present" : "missing")
+                    << ", temperature=" << (view.has_temperature_celsius() ? "present" : "missing") << "\n";
+        }
+    };
+
+    PacketHandler handler;
+    auto signal_handler = std::bind(&PacketHandler::on_signal, &handler, std::placeholders::_1);
+    auto context_handler = std::bind(&PacketHandler::on_context, &handler, std::placeholders::_1);
+
+    std::vector<vita::byte> recv_buffer(2048);
+    const auto received = ::recv(rx_fd, recv_buffer.data(), recv_buffer.size(), 0);
+    if (received < 0) {
+        throw std::system_error(errno, std::generic_category(), "recv");
+    }
+    recv_buffer.resize(static_cast<std::size_t>(received));
+
+    vita::packet::dispatch(vita::as_bytes_view(recv_buffer), signal_handler, context_handler);
+
+```
 
 ## Scope
 

@@ -1,162 +1,91 @@
 #include <vitality/vitality.hpp>
 
-#include <array>
-#include <cerrno>
-#include <complex>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <exception>
-#include <iostream>
-#include <stdexcept>
-#include <system_error>
-#include <variant>
-#include <vector>
-
-#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <unistd.h>
-#else
-#error "examples/socket.cpp currently requires POSIX sockets"
-#endif
 
-namespace {
+#include <complex>
+#include <cstring>
+#include <iostream>
+#include <stdexcept>
+#include <system_error>
+#include <vector>
 
-using vita::byte;
-using vita::bytes_view;
+int main() {
+    std::vector<std::complex<float>> tx_samples = {
+        {1.0f, -1.0f},
+        {2.5f, 0.25f},
+        {-3.0f, 4.0f},
+        {0.0f, 0.5f},
+    };
 
-int make_udp_socket() {
-    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
+    vita::packet::signal packet;
+    packet.set_stream_id(0x12345678u);
+    packet.set_payload_view(vita::as_bytes_view(tx_samples));
+    const auto wire_bytes = packet.to_bytes();
+
+    const int rx_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    const int tx_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (rx_fd < 0 || tx_fd < 0) {
         throw std::system_error(errno, std::generic_category(), "socket");
     }
-    return fd;
-}
 
-sockaddr_in bind_loopback_receiver(int fd) {
-    timeval timeout{};
-    timeout.tv_sec = 1;
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
-        throw std::system_error(errno, std::generic_category(), "setsockopt(SO_RCVTIMEO)");
-    }
+    sockaddr_in rx_addr{};
+    rx_addr.sin_family = AF_INET;
+    rx_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    rx_addr.sin_port = htons(0);
 
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(0);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+    if (::bind(rx_fd, reinterpret_cast<const sockaddr*>(&rx_addr), sizeof(rx_addr)) != 0) {
         throw std::system_error(errno, std::generic_category(), "bind");
     }
 
-    socklen_t size = sizeof(address);
-    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) != 0) {
+    socklen_t rx_addr_len = sizeof(rx_addr);
+    if (::getsockname(rx_fd, reinterpret_cast<sockaddr*>(&rx_addr), &rx_addr_len) != 0) {
         throw std::system_error(errno, std::generic_category(), "getsockname");
     }
 
-    return address;
-}
-
-void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
-    const auto sent = ::sendto(fd,
-                               reinterpret_cast<const void*>(bytes.data()),
-                               bytes.size(),
+    const auto sent = ::sendto(tx_fd,
+                               wire_bytes.data(),
+                               wire_bytes.size(),
                                0,
-                               reinterpret_cast<const sockaddr*>(&destination),
-                               sizeof(destination));
-    if (sent < 0) {
+                               reinterpret_cast<const sockaddr*>(&rx_addr),
+                               sizeof(rx_addr));
+    if (sent < 0 || static_cast<std::size_t>(sent) != wire_bytes.size()) {
         throw std::system_error(errno, std::generic_category(), "sendto");
     }
-}
 
-std::vector<byte> receive_datagram(int fd) {
-    std::array<byte, 65536> buffer{};
-    sockaddr_in source{};
-    socklen_t source_size = sizeof(source);
-
-    const auto received = ::recvfrom(fd,
-                                     reinterpret_cast<void*>(buffer.data()),
-                                     buffer.size(),
+    std::vector<vita::byte> recv_buffer(2048);
+    sockaddr_in src_addr{};
+    socklen_t src_addr_len = sizeof(src_addr);
+    const auto received = ::recvfrom(rx_fd,
+                                     recv_buffer.data(),
+                                     recv_buffer.size(),
                                      0,
-                                     reinterpret_cast<sockaddr*>(&source),
-                                     &source_size);
+                                     reinterpret_cast<sockaddr*>(&src_addr),
+                                     &src_addr_len);
     if (received < 0) {
         throw std::system_error(errno, std::generic_category(), "recvfrom");
     }
+    recv_buffer.resize(static_cast<std::size_t>(received));
 
-    return std::vector<byte>(buffer.begin(), buffer.begin() + received);
-}
+    const auto view = vita::view::signal::parse(vita::as_bytes_view(recv_buffer));
 
-} // namespace
+    std::vector<std::complex<float>> rx_samples(view.payload().size() / sizeof(std::complex<float>));
+    std::memcpy(rx_samples.data(), view.payload().data(), view.payload().size());
 
-int main() {
-    int receiver_fd = -1;
-    int sender_fd = -1;
+    // Vitality byte-swaps VITA metadata fields for you.
+    // Payload byte order is application-defined, so swap payload words only when
+    // your stream convention requires it.
+    // Example for float32 IQ payloads received in opposite byte order:
+    // vita::byteswap_inplace(std::span<std::complex<float>>(rx_samples));
 
-    try {
-        receiver_fd = make_udp_socket();
-        sender_fd = make_udp_socket();
-        const auto receiver = bind_loopback_receiver(receiver_fd);
-
-        std::vector<std::complex<float>> tx_samples = {
-            {1.0f, -1.0f},
-            {2.5f, 0.25f},
-        };
-
-        vita::packet::context context;
-        context.set_stream_id(0x12345678u);
-        context.set_sample_rate_sps(7.68e6);
-        context.set_rf_reference_frequency_hz(915.0e6);
-
-        vita::packet::signal signal;
-        signal.set_stream_id(0x12345678u);
-        signal.set_payload_view(vita::as_bytes_view(tx_samples));
-
-        const auto context_bytes = context.to_bytes();
-        const auto signal_bytes = signal.to_bytes();
-
-        send_datagram(sender_fd, receiver, vita::as_bytes_view(context_bytes));
-        send_datagram(sender_fd, receiver, vita::as_bytes_view(signal_bytes));
-
-        for (int i = 0; i < 2; ++i) {
-            const auto received = receive_datagram(receiver_fd);
-            const auto packet = vita::packet::parse(vita::as_bytes_view(received));
-
-            if (std::holds_alternative<vita::view::context>(packet)) {
-                const auto& view = std::get<vita::view::context>(packet);
-                std::cout << "context: stream=0x" << std::hex << view.stream_id().value() << std::dec
-                          << " rf=" << view.rf_reference_frequency_hz()
-                          << " sample_rate=" << view.sample_rate_sps() << "\n";
-            } else {
-                const auto& view = std::get<vita::view::signal>(packet);
-                std::vector<std::complex<float>> rx_samples(view.payload().size() / sizeof(std::complex<float>));
-                std::memcpy(rx_samples.data(), view.payload().data(), view.payload().size());
-
-                // Payload bytes are not swapped automatically. For a wire format
-                // that stores float32 words in opposite byte order, do this after
-                // copying the payload into typed storage:
-                // vita::byteswap_inplace(std::span<std::complex<float>>(rx_samples));
-
-                std::cout << "signal: stream=0x" << std::hex << view.stream_id().value() << std::dec
-                          << " first_sample=(" << rx_samples.front().real() << ", "
-                          << rx_samples.front().imag() << ")\n";
-            }
-        }
-
-        ::close(sender_fd);
-        ::close(receiver_fd);
-        return 0;
-    } catch (const std::exception& ex) {
-        if (sender_fd >= 0) {
-            ::close(sender_fd);
-        }
-        if (receiver_fd >= 0) {
-            ::close(receiver_fd);
-        }
-        std::cerr << "socket example failed: " << ex.what() << '\n';
-        return 1;
+    std::cout << "stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec << "\n";
+    for (const auto& sample : rx_samples) {
+        std::cout << sample.real() << ", " << sample.imag() << "\n";
     }
+
+    ::close(tx_fd);
+    ::close(rx_fd);
+    return 0;
 }

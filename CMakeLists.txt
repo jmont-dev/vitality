@@ -19,6 +19,6 @@ if(UNIX)
 endif()
 
 add_executable(vitality_tests tests/vitality_tests.cpp)
-target_link_libraries(vitality_tests PRIVATE Vitality)
 target_include_directories(vitality_tests PRIVATE tests)
+target_link_libraries(vitality_tests PRIVATE Vitality)
 add_test(NAME vitality_tests COMMAND vitality_tests)

@@ -1,13 +1,12 @@
 #ifndef VITALITY_VITALITY_HPP
 #define VITALITY_VITALITY_HPP
 
-#include <array>
 #include <bit>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <complex>
 #include <limits>
 #include <optional>
 #include <span>
@@ -78,6 +77,144 @@ struct is_std_complex<std::complex<T>> : std::true_type {};
 template <typename T>
 inline constexpr bool is_std_complex_v = is_std_complex<T>::value;
 
+[[nodiscard]] inline const std::uint8_t* u8ptr(bytes_view bytes) noexcept {
+    return reinterpret_cast<const std::uint8_t*>(bytes.data());
+}
+
+[[nodiscard]] inline std::uint8_t* u8ptr(mutable_bytes_view bytes) noexcept {
+    return reinterpret_cast<std::uint8_t*>(bytes.data());
+}
+
+[[nodiscard]] inline std::uint16_t load_be16(const std::uint8_t* p) noexcept {
+    return (static_cast<std::uint16_t>(p[0]) << 8U) |
+           static_cast<std::uint16_t>(p[1]);
+}
+
+[[nodiscard]] inline std::uint32_t load_be32(const std::uint8_t* p) noexcept {
+    return (static_cast<std::uint32_t>(p[0]) << 24U) |
+           (static_cast<std::uint32_t>(p[1]) << 16U) |
+           (static_cast<std::uint32_t>(p[2]) << 8U) |
+           static_cast<std::uint32_t>(p[3]);
+}
+
+[[nodiscard]] inline std::uint64_t load_be64(const std::uint8_t* p) noexcept {
+    return (static_cast<std::uint64_t>(p[0]) << 56U) |
+           (static_cast<std::uint64_t>(p[1]) << 48U) |
+           (static_cast<std::uint64_t>(p[2]) << 40U) |
+           (static_cast<std::uint64_t>(p[3]) << 32U) |
+           (static_cast<std::uint64_t>(p[4]) << 24U) |
+           (static_cast<std::uint64_t>(p[5]) << 16U) |
+           (static_cast<std::uint64_t>(p[6]) << 8U) |
+           static_cast<std::uint64_t>(p[7]);
+}
+
+inline void store_be16(std::uint8_t* p, std::uint16_t value) noexcept {
+    p[0] = static_cast<std::uint8_t>((value >> 8U) & 0xFFu);
+    p[1] = static_cast<std::uint8_t>(value & 0xFFu);
+}
+
+inline void store_be32(std::uint8_t* p, std::uint32_t value) noexcept {
+    p[0] = static_cast<std::uint8_t>((value >> 24U) & 0xFFu);
+    p[1] = static_cast<std::uint8_t>((value >> 16U) & 0xFFu);
+    p[2] = static_cast<std::uint8_t>((value >> 8U) & 0xFFu);
+    p[3] = static_cast<std::uint8_t>(value & 0xFFu);
+}
+
+inline void store_be64(std::uint8_t* p, std::uint64_t value) noexcept {
+    p[0] = static_cast<std::uint8_t>((value >> 56U) & 0xFFu);
+    p[1] = static_cast<std::uint8_t>((value >> 48U) & 0xFFu);
+    p[2] = static_cast<std::uint8_t>((value >> 40U) & 0xFFu);
+    p[3] = static_cast<std::uint8_t>((value >> 32U) & 0xFFu);
+    p[4] = static_cast<std::uint8_t>((value >> 24U) & 0xFFu);
+    p[5] = static_cast<std::uint8_t>((value >> 16U) & 0xFFu);
+    p[6] = static_cast<std::uint8_t>((value >> 8U) & 0xFFu);
+    p[7] = static_cast<std::uint8_t>(value & 0xFFu);
+}
+
+[[nodiscard]] inline std::int16_t sign_extend_16(std::uint16_t value) noexcept {
+    return static_cast<std::int16_t>(value);
+}
+
+[[nodiscard]] inline std::int64_t sign_extend_64(std::uint64_t value) noexcept {
+    return static_cast<std::int64_t>(value);
+}
+
+[[nodiscard]] inline double decode_q44_20(std::uint64_t raw) noexcept {
+    return static_cast<double>(sign_extend_64(raw)) / static_cast<double>(1ULL << 20U);
+}
+
+[[nodiscard]] inline std::uint64_t encode_q44_20(double value) {
+    constexpr long double scale = static_cast<long double>(1ULL << 20U);
+    const long double scaled = static_cast<long double>(value) * scale;
+    if (scaled < static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
+        scaled > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+        throw std::out_of_range("value does not fit signed 64-bit Q44.20");
+    }
+    return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::llround(scaled)));
+}
+
+[[nodiscard]] inline double decode_q7(std::uint16_t raw) noexcept {
+    return static_cast<double>(sign_extend_16(raw)) / 128.0;
+}
+
+[[nodiscard]] inline std::uint16_t encode_q7(double value) {
+    const long double scaled = static_cast<long double>(value) * 128.0L;
+    if (scaled < static_cast<long double>(std::numeric_limits<std::int16_t>::min()) ||
+        scaled > static_cast<long double>(std::numeric_limits<std::int16_t>::max())) {
+        throw std::out_of_range("value does not fit signed 16-bit Qx.7");
+    }
+    return static_cast<std::uint16_t>(static_cast<std::int16_t>(std::llround(scaled)));
+}
+
+[[nodiscard]] inline double decode_q6(std::uint16_t raw) noexcept {
+    return static_cast<double>(sign_extend_16(raw)) / 64.0;
+}
+
+[[nodiscard]] inline std::uint16_t encode_q6(double value) {
+    const long double scaled = static_cast<long double>(value) * 64.0L;
+    if (scaled < static_cast<long double>(std::numeric_limits<std::int16_t>::min()) ||
+        scaled > static_cast<long double>(std::numeric_limits<std::int16_t>::max())) {
+        throw std::out_of_range("value does not fit signed 16-bit Qx.6");
+    }
+    return static_cast<std::uint16_t>(static_cast<std::int16_t>(std::llround(scaled)));
+}
+
+inline void append_be32(std::vector<byte>& out, std::uint32_t value) {
+    const auto start = out.size();
+    out.resize(start + 4U);
+    store_be32(u8ptr(mutable_bytes_view{out.data() + start, 4U}), value);
+}
+
+inline void append_be64(std::vector<byte>& out, std::uint64_t value) {
+    const auto start = out.size();
+    out.resize(start + 8U);
+    store_be64(u8ptr(mutable_bytes_view{out.data() + start, 8U}), value);
+}
+
+inline void append_bytes(std::vector<byte>& out, bytes_view payload) {
+    out.insert(out.end(), payload.begin(), payload.end());
+}
+
+[[nodiscard]] constexpr std::uint32_t packet_header_word(std::uint8_t packet_type,
+                                                         bool class_id_included,
+                                                         bool trailer_included,
+                                                         bool not_v49d0,
+                                                         bool packet_specific_flag,
+                                                         std::uint8_t tsi,
+                                                         std::uint8_t tsf,
+                                                         std::uint8_t sequence,
+                                                         std::uint16_t packet_size_words) noexcept {
+    return (static_cast<std::uint32_t>(packet_type & 0x0Fu) << 28U) |
+           (static_cast<std::uint32_t>(class_id_included ? 1U : 0U) << 27U) |
+           (static_cast<std::uint32_t>(trailer_included ? 1U : 0U) << 26U) |
+           (static_cast<std::uint32_t>(not_v49d0 ? 1U : 0U) << 25U) |
+           (static_cast<std::uint32_t>(packet_specific_flag ? 1U : 0U) << 24U) |
+           (static_cast<std::uint32_t>(tsi & 0x03U) << 22U) |
+           (static_cast<std::uint32_t>(tsf & 0x03U) << 20U) |
+           (static_cast<std::uint32_t>(sequence & 0x0FU) << 16U) |
+           packet_size_words;
+}
+
 } // namespace detail
 
 template <typename T>
@@ -127,156 +264,6 @@ inline void byteswap_inplace(std::span<T> values) noexcept {
         byteswap_inplace(value);
     }
 }
-
-namespace detail {
-
-[[nodiscard]] inline const std::uint8_t* u8ptr(bytes_view bytes) noexcept {
-    return reinterpret_cast<const std::uint8_t*>(bytes.data());
-}
-
-[[nodiscard]] inline std::uint8_t* u8ptr(mutable_bytes_view bytes) noexcept {
-    return reinterpret_cast<std::uint8_t*>(bytes.data());
-}
-
-[[nodiscard]] inline std::uint16_t load_be16(const std::uint8_t* p) noexcept {
-    return (static_cast<std::uint16_t>(p[0]) << 8) |
-           (static_cast<std::uint16_t>(p[1]));
-}
-
-[[nodiscard]] inline std::uint32_t load_be32(const std::uint8_t* p) noexcept {
-    return (static_cast<std::uint32_t>(p[0]) << 24) |
-           (static_cast<std::uint32_t>(p[1]) << 16) |
-           (static_cast<std::uint32_t>(p[2]) << 8) |
-           (static_cast<std::uint32_t>(p[3]));
-}
-
-[[nodiscard]] inline std::uint64_t load_be64(const std::uint8_t* p) noexcept {
-    return (static_cast<std::uint64_t>(p[0]) << 56) |
-           (static_cast<std::uint64_t>(p[1]) << 48) |
-           (static_cast<std::uint64_t>(p[2]) << 40) |
-           (static_cast<std::uint64_t>(p[3]) << 32) |
-           (static_cast<std::uint64_t>(p[4]) << 24) |
-           (static_cast<std::uint64_t>(p[5]) << 16) |
-           (static_cast<std::uint64_t>(p[6]) << 8) |
-           (static_cast<std::uint64_t>(p[7]));
-}
-
-inline void store_be16(std::uint8_t* p, std::uint16_t value) noexcept {
-    p[0] = static_cast<std::uint8_t>((value >> 8) & 0xFFu);
-    p[1] = static_cast<std::uint8_t>(value & 0xFFu);
-}
-
-inline void store_be32(std::uint8_t* p, std::uint32_t value) noexcept {
-    p[0] = static_cast<std::uint8_t>((value >> 24) & 0xFFu);
-    p[1] = static_cast<std::uint8_t>((value >> 16) & 0xFFu);
-    p[2] = static_cast<std::uint8_t>((value >> 8) & 0xFFu);
-    p[3] = static_cast<std::uint8_t>(value & 0xFFu);
-}
-
-inline void store_be64(std::uint8_t* p, std::uint64_t value) noexcept {
-    p[0] = static_cast<std::uint8_t>((value >> 56) & 0xFFu);
-    p[1] = static_cast<std::uint8_t>((value >> 48) & 0xFFu);
-    p[2] = static_cast<std::uint8_t>((value >> 40) & 0xFFu);
-    p[3] = static_cast<std::uint8_t>((value >> 32) & 0xFFu);
-    p[4] = static_cast<std::uint8_t>((value >> 24) & 0xFFu);
-    p[5] = static_cast<std::uint8_t>((value >> 16) & 0xFFu);
-    p[6] = static_cast<std::uint8_t>((value >> 8) & 0xFFu);
-    p[7] = static_cast<std::uint8_t>(value & 0xFFu);
-}
-
-[[nodiscard]] inline std::int16_t sign_extend_16(std::uint16_t value) noexcept {
-    return static_cast<std::int16_t>(value);
-}
-
-[[nodiscard]] inline std::int32_t sign_extend_32(std::uint32_t value) noexcept {
-    return static_cast<std::int32_t>(value);
-}
-
-[[nodiscard]] inline std::int64_t sign_extend_64(std::uint64_t value) noexcept {
-    return static_cast<std::int64_t>(value);
-}
-
-[[nodiscard]] inline double decode_q44_20(std::uint64_t raw) noexcept {
-    return static_cast<double>(sign_extend_64(raw)) / static_cast<double>(1ULL << 20U);
-}
-
-[[nodiscard]] inline std::uint64_t encode_q44_20(double value) {
-    constexpr double scale = static_cast<double>(1ULL << 20U);
-    const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
-    if (scaled < static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
-        scaled > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
-        throw std::out_of_range("value does not fit signed 64-bit Q44.20");
-    }
-    return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::llround(scaled)));
-}
-
-[[nodiscard]] inline double decode_q8_7(std::uint16_t raw) noexcept {
-    return static_cast<double>(sign_extend_16(raw)) / 128.0;
-}
-
-[[nodiscard]] inline std::uint16_t encode_q8_7(double value) {
-    const long double scaled = static_cast<long double>(value) * 128.0L;
-    if (scaled < static_cast<long double>(std::numeric_limits<std::int16_t>::min()) ||
-        scaled > static_cast<long double>(std::numeric_limits<std::int16_t>::max())) {
-        throw std::out_of_range("value does not fit signed 16-bit Q8.7");
-    }
-    return static_cast<std::uint16_t>(static_cast<std::int16_t>(std::llround(scaled)));
-}
-
-[[nodiscard]] inline double decode_q9_6(std::uint16_t raw) noexcept {
-    return static_cast<double>(sign_extend_16(raw)) / 64.0;
-}
-
-[[nodiscard]] inline std::uint16_t encode_q9_6(double value) {
-    const long double scaled = static_cast<long double>(value) * 64.0L;
-    if (scaled < static_cast<long double>(std::numeric_limits<std::int16_t>::min()) ||
-        scaled > static_cast<long double>(std::numeric_limits<std::int16_t>::max())) {
-        throw std::out_of_range("value does not fit signed 16-bit Q9.6");
-    }
-    return static_cast<std::uint16_t>(static_cast<std::int16_t>(std::llround(scaled)));
-}
-
-[[nodiscard]] inline byte to_byte(std::uint8_t value) noexcept {
-    return static_cast<byte>(value);
-}
-
-inline void append_be32(std::vector<byte>& out, std::uint32_t value) {
-    const auto start = out.size();
-    out.resize(start + 4U);
-    store_be32(u8ptr(mutable_bytes_view{out.data() + start, 4U}), value);
-}
-
-inline void append_be64(std::vector<byte>& out, std::uint64_t value) {
-    const auto start = out.size();
-    out.resize(start + 8U);
-    store_be64(u8ptr(mutable_bytes_view{out.data() + start, 8U}), value);
-}
-
-inline void append_bytes(std::vector<byte>& out, bytes_view payload) {
-    out.insert(out.end(), payload.begin(), payload.end());
-}
-
-[[nodiscard]] constexpr std::uint32_t packet_header_word(std::uint8_t packet_type,
-                                                      bool class_id_included,
-                                                      bool trailer_included,
-                                                      bool not_v49d0,
-                                                      bool packet_specific_flag,
-                                                      std::uint8_t tsi,
-                                                      std::uint8_t tsf,
-                                                      std::uint8_t sequence,
-                                                      std::uint16_t packet_size_words) noexcept {
-    return (static_cast<std::uint32_t>(packet_type & 0x0Fu) << 28U) |
-           (static_cast<std::uint32_t>(class_id_included ? 1U : 0U) << 27U) |
-           (static_cast<std::uint32_t>(trailer_included ? 1U : 0U) << 26U) |
-           (static_cast<std::uint32_t>(not_v49d0 ? 1U : 0U) << 25U) |
-           (static_cast<std::uint32_t>(packet_specific_flag ? 1U : 0U) << 24U) |
-           (static_cast<std::uint32_t>(tsi & 0x03U) << 22U) |
-           (static_cast<std::uint32_t>(tsf & 0x03U) << 20U) |
-           (static_cast<std::uint32_t>(sequence & 0x0FU) << 16U) |
-           packet_size_words;
-}
-
-} // namespace detail
 
 enum class PacketType : std::uint8_t {
     SignalDataNoStreamId = 0,
@@ -329,6 +316,7 @@ enum class DataItemFormat : std::uint8_t {
     UnsignedVrt4BitExponent = 20,
     UnsignedVrt5BitExponent = 21,
     UnsignedVrt6BitExponent = 22,
+    UnsignedFixedPointNonNormalized = 23,
 };
 
 enum class PackingMethod : std::uint8_t {
@@ -452,17 +440,29 @@ public:
     [[nodiscard]] constexpr std::uint8_t data_item_fraction_size() const noexcept {
         return static_cast<std::uint8_t>((word0_ >> 12U) & 0x0FU);
     }
-    [[nodiscard]] constexpr std::uint8_t item_packing_field_size() const noexcept {
+    [[nodiscard]] constexpr std::uint8_t raw_item_packing_field_size() const noexcept {
         return static_cast<std::uint8_t>((word0_ >> 6U) & 0x3FU);
     }
-    [[nodiscard]] constexpr std::uint8_t data_item_size() const noexcept {
+    [[nodiscard]] constexpr std::uint8_t raw_data_item_size() const noexcept {
         return static_cast<std::uint8_t>(word0_ & 0x3FU);
     }
-    [[nodiscard]] constexpr std::uint16_t repeat_count() const noexcept {
+    [[nodiscard]] constexpr std::uint8_t item_packing_field_size() const noexcept {
+        return static_cast<std::uint8_t>(raw_item_packing_field_size() + 1U);
+    }
+    [[nodiscard]] constexpr std::uint8_t data_item_size() const noexcept {
+        return static_cast<std::uint8_t>(raw_data_item_size() + 1U);
+    }
+    [[nodiscard]] constexpr std::uint16_t raw_repeat_count() const noexcept {
         return static_cast<std::uint16_t>((word1_ >> 16U) & 0xFFFFU);
     }
-    [[nodiscard]] constexpr std::uint16_t vector_size() const noexcept {
+    [[nodiscard]] constexpr std::uint16_t raw_vector_size() const noexcept {
         return static_cast<std::uint16_t>(word1_ & 0xFFFFU);
+    }
+    [[nodiscard]] constexpr std::uint16_t repeat_count() const noexcept {
+        return static_cast<std::uint16_t>(raw_repeat_count() + 1U);
+    }
+    [[nodiscard]] constexpr std::uint16_t vector_size() const noexcept {
+        return static_cast<std::uint16_t>(raw_vector_size() + 1U);
     }
 
     constexpr void set_packing_method(PackingMethod value) noexcept {
@@ -486,17 +486,30 @@ public:
     constexpr void set_data_item_fraction_size(std::uint8_t value) noexcept {
         word0_ = (word0_ & ~(0x0FU << 12U)) | (static_cast<std::uint32_t>(value & 0x0FU) << 12U);
     }
-    constexpr void set_item_packing_field_size(std::uint8_t value) noexcept {
-        word0_ = (word0_ & ~(0x3FU << 6U)) | (static_cast<std::uint32_t>(value & 0x3FU) << 6U);
+    void set_item_packing_field_size(std::uint8_t value) {
+        if (value == 0U) {
+            throw std::invalid_argument("item packing field size must be at least 1 bit");
+        }
+        const auto encoded = static_cast<std::uint32_t>((value - 1U) & 0x3FU);
+        word0_ = (word0_ & ~(0x3FU << 6U)) | (encoded << 6U);
     }
-    constexpr void set_data_item_size(std::uint8_t value) noexcept {
-        word0_ = (word0_ & ~0x3FU) | static_cast<std::uint32_t>(value & 0x3FU);
+    void set_data_item_size(std::uint8_t value) {
+        if (value == 0U) {
+            throw std::invalid_argument("data item size must be at least 1 bit");
+        }
+        word0_ = (word0_ & ~0x3FU) | static_cast<std::uint32_t>((value - 1U) & 0x3FU);
     }
-    constexpr void set_repeat_count(std::uint16_t value) noexcept {
-        word1_ = (word1_ & 0x0000FFFFU) | (static_cast<std::uint32_t>(value) << 16U);
+    void set_repeat_count(std::uint16_t value) {
+        if (value == 0U) {
+            throw std::invalid_argument("repeat count must be at least 1");
+        }
+        word1_ = (word1_ & 0x0000FFFFU) | (static_cast<std::uint32_t>(value - 1U) << 16U);
     }
-    constexpr void set_vector_size(std::uint16_t value) noexcept {
-        word1_ = (word1_ & 0xFFFF0000U) | static_cast<std::uint32_t>(value);
+    void set_vector_size(std::uint16_t value) {
+        if (value == 0U) {
+            throw std::invalid_argument("vector size must be at least 1");
+        }
+        word1_ = (word1_ & 0xFFFF0000U) | static_cast<std::uint32_t>(value - 1U);
     }
 
 private:
@@ -556,6 +569,7 @@ private:
     [[nodiscard]] constexpr bool bit(unsigned position) const noexcept {
         return ((raw_ >> position) & 0x1U) != 0U;
     }
+
     constexpr void set_bit(unsigned position, bool value) noexcept {
         raw_ = (raw_ & ~(1U << position)) | (static_cast<std::uint32_t>(value ? 1U : 0U) << position);
     }
@@ -629,7 +643,7 @@ public:
                                           packet_size_words_);
     }
 
-    [[nodiscard]] static PacketHeader from_raw(std::uint32_t raw) {
+    [[nodiscard]] static PacketHeader from_raw(std::uint32_t raw) noexcept {
         PacketHeader header;
         header.packet_type_ = static_cast<PacketType>((raw >> 28U) & 0x0FU);
         header.class_id_included_ = ((raw >> 27U) & 0x01U) != 0U;
@@ -673,13 +687,12 @@ public:
         }
 
         const auto* p = detail::u8ptr(packet);
-        const auto header_word = detail::load_be32(p);
         SignalDataPacketView out;
         out.packet_ = packet;
-        out.header_ = PacketHeader::from_raw(header_word);
+        out.header_ = PacketHeader::from_raw(detail::load_be32(p));
 
         if (!out.header_.is_signal_data()) {
-            throw ParseError(ParseErrorCode::UnsupportedPacketType, "packet is not a supported signal data packet");
+            throw ParseError(ParseErrorCode::UnsupportedPacketType, "packet is not a supported signal-data packet");
         }
 
         const auto packet_size_words = out.header_.packet_size_words();
@@ -706,6 +719,7 @@ public:
             out.class_id_ = ClassId::from_raw(detail::load_be64(p + offset));
             offset += 8U;
         }
+
         out.timestamp_.set_integer_type(out.header_.integer_timestamp_type());
         out.timestamp_.set_fractional_type(out.header_.fractional_timestamp_type());
         if (out.timestamp_.has_integer()) {
@@ -723,13 +737,11 @@ public:
             offset += 8U;
         }
 
-        std::size_t trailer_size = out.header_.trailer_included() ? 4U : 0U;
+        const std::size_t trailer_size = out.header_.trailer_included() ? 4U : 0U;
         if (offset + trailer_size > packet.size()) {
             throw ParseError(ParseErrorCode::MalformedPacket, "header fields consume more than packet size");
         }
-        const std::size_t payload_size = packet.size() - offset - trailer_size;
-        out.payload_ = packet.subspan(offset, payload_size);
-
+        out.payload_ = packet.subspan(offset, packet.size() - offset - trailer_size);
         if (out.header_.trailer_included()) {
             out.trailer_ = Trailer(detail::load_be32(p + packet.size() - 4U));
         }
@@ -796,40 +808,40 @@ public:
     [[nodiscard]] std::uint32_t cif0_raw() const noexcept { return cif0_; }
     [[nodiscard]] bool change_indicator() const noexcept { return (cif0_ & SupportedCif0::change_indicator) != 0U; }
 
-    [[nodiscard]] bool has_reference_point_id() const noexcept { return ref_point_id_.has_value(); }
-    [[nodiscard]] bool has_bandwidth_hz() const noexcept { return bandwidth_.has_value(); }
-    [[nodiscard]] bool has_if_reference_frequency_hz() const noexcept { return if_ref_freq_.has_value(); }
-    [[nodiscard]] bool has_rf_reference_frequency_hz() const noexcept { return rf_ref_freq_.has_value(); }
-    [[nodiscard]] bool has_rf_reference_frequency_offset_hz() const noexcept { return rf_ref_freq_offset_.has_value(); }
-    [[nodiscard]] bool has_if_band_offset_hz() const noexcept { return if_band_offset_.has_value(); }
-    [[nodiscard]] bool has_reference_level_dbm() const noexcept { return reference_level_.has_value(); }
-    [[nodiscard]] bool has_gain_stage1_db() const noexcept { return gain_stage1_.has_value(); }
-    [[nodiscard]] bool has_gain_stage2_db() const noexcept { return gain_stage2_.has_value(); }
+    [[nodiscard]] bool has_reference_point_id() const noexcept { return reference_point_id_.has_value(); }
+    [[nodiscard]] bool has_bandwidth_hz() const noexcept { return bandwidth_hz_.has_value(); }
+    [[nodiscard]] bool has_if_reference_frequency_hz() const noexcept { return if_reference_frequency_hz_.has_value(); }
+    [[nodiscard]] bool has_rf_reference_frequency_hz() const noexcept { return rf_reference_frequency_hz_.has_value(); }
+    [[nodiscard]] bool has_rf_reference_frequency_offset_hz() const noexcept { return rf_reference_frequency_offset_hz_.has_value(); }
+    [[nodiscard]] bool has_if_band_offset_hz() const noexcept { return if_band_offset_hz_.has_value(); }
+    [[nodiscard]] bool has_reference_level_dbm() const noexcept { return reference_level_dbm_.has_value(); }
+    [[nodiscard]] bool has_gain_stage1_db() const noexcept { return gain_stage1_db_.has_value(); }
+    [[nodiscard]] bool has_gain_stage2_db() const noexcept { return gain_stage2_db_.has_value(); }
     [[nodiscard]] bool has_over_range_count() const noexcept { return over_range_count_.has_value(); }
-    [[nodiscard]] bool has_sample_rate_sps() const noexcept { return sample_rate_.has_value(); }
-    [[nodiscard]] bool has_timestamp_adjustment_femtoseconds() const noexcept { return timestamp_adjustment_.has_value(); }
-    [[nodiscard]] bool has_timestamp_calibration_time_seconds() const noexcept { return timestamp_calibration_time_.has_value(); }
-    [[nodiscard]] bool has_temperature_celsius() const noexcept { return temperature_.has_value(); }
+    [[nodiscard]] bool has_sample_rate_sps() const noexcept { return sample_rate_sps_.has_value(); }
+    [[nodiscard]] bool has_timestamp_adjustment_femtoseconds() const noexcept { return timestamp_adjustment_femtoseconds_.has_value(); }
+    [[nodiscard]] bool has_timestamp_calibration_time_seconds() const noexcept { return timestamp_calibration_time_seconds_.has_value(); }
+    [[nodiscard]] bool has_temperature_celsius() const noexcept { return temperature_celsius_.has_value(); }
     [[nodiscard]] bool has_device_identifier() const noexcept { return device_identifier_.has_value(); }
-    [[nodiscard]] bool has_state_event_indicators() const noexcept { return state_event_.has_value(); }
+    [[nodiscard]] bool has_state_event_indicators() const noexcept { return state_event_indicators_.has_value(); }
     [[nodiscard]] bool has_signal_data_format() const noexcept { return signal_data_format_.has_value(); }
 
-    [[nodiscard]] std::uint32_t reference_point_id() const { return require(ref_point_id_, "reference point ID"); }
-    [[nodiscard]] double bandwidth_hz() const { return require(bandwidth_, "bandwidth"); }
-    [[nodiscard]] double if_reference_frequency_hz() const { return require(if_ref_freq_, "IF reference frequency"); }
-    [[nodiscard]] double rf_reference_frequency_hz() const { return require(rf_ref_freq_, "RF reference frequency"); }
-    [[nodiscard]] double rf_reference_frequency_offset_hz() const { return require(rf_ref_freq_offset_, "RF reference frequency offset"); }
-    [[nodiscard]] double if_band_offset_hz() const { return require(if_band_offset_, "IF band offset"); }
-    [[nodiscard]] double reference_level_dbm() const { return require(reference_level_, "reference level"); }
-    [[nodiscard]] double gain_stage1_db() const { return require(gain_stage1_, "gain stage 1"); }
-    [[nodiscard]] double gain_stage2_db() const { return require(gain_stage2_, "gain stage 2"); }
+    [[nodiscard]] std::uint32_t reference_point_id() const { return require(reference_point_id_, "reference point ID"); }
+    [[nodiscard]] double bandwidth_hz() const { return require(bandwidth_hz_, "bandwidth"); }
+    [[nodiscard]] double if_reference_frequency_hz() const { return require(if_reference_frequency_hz_, "IF reference frequency"); }
+    [[nodiscard]] double rf_reference_frequency_hz() const { return require(rf_reference_frequency_hz_, "RF reference frequency"); }
+    [[nodiscard]] double rf_reference_frequency_offset_hz() const { return require(rf_reference_frequency_offset_hz_, "RF reference frequency offset"); }
+    [[nodiscard]] double if_band_offset_hz() const { return require(if_band_offset_hz_, "IF band offset"); }
+    [[nodiscard]] double reference_level_dbm() const { return require(reference_level_dbm_, "reference level"); }
+    [[nodiscard]] double gain_stage1_db() const { return require(gain_stage1_db_, "gain stage 1"); }
+    [[nodiscard]] double gain_stage2_db() const { return require(gain_stage2_db_, "gain stage 2"); }
     [[nodiscard]] std::uint32_t over_range_count() const { return require(over_range_count_, "over-range count"); }
-    [[nodiscard]] double sample_rate_sps() const { return require(sample_rate_, "sample rate"); }
-    [[nodiscard]] std::int64_t timestamp_adjustment_femtoseconds() const { return require(timestamp_adjustment_, "timestamp adjustment"); }
-    [[nodiscard]] std::uint32_t timestamp_calibration_time_seconds() const { return require(timestamp_calibration_time_, "timestamp calibration time"); }
-    [[nodiscard]] double temperature_celsius() const { return require(temperature_, "temperature"); }
+    [[nodiscard]] double sample_rate_sps() const { return require(sample_rate_sps_, "sample rate"); }
+    [[nodiscard]] std::int64_t timestamp_adjustment_femtoseconds() const { return require(timestamp_adjustment_femtoseconds_, "timestamp adjustment"); }
+    [[nodiscard]] std::uint32_t timestamp_calibration_time_seconds() const { return require(timestamp_calibration_time_seconds_, "timestamp calibration time"); }
+    [[nodiscard]] double temperature_celsius() const { return require(temperature_celsius_, "temperature"); }
     [[nodiscard]] std::uint32_t device_identifier() const { return require(device_identifier_, "device identifier"); }
-    [[nodiscard]] StateEventIndicators state_event_indicators() const { return require(state_event_, "state/event indicators"); }
+    [[nodiscard]] StateEventIndicators state_event_indicators() const { return require(state_event_indicators_, "state/event indicators"); }
     [[nodiscard]] SignalDataFormat signal_data_format() const { return require(signal_data_format_, "signal data format"); }
 
     [[nodiscard]] static ContextPacketView parse(bytes_view packet) {
@@ -838,16 +850,15 @@ public:
         }
 
         const auto* p = detail::u8ptr(packet);
-        const auto header_word = detail::load_be32(p);
         ContextPacketView out;
         out.packet_ = packet;
-        out.header_ = PacketHeader::from_raw(header_word);
+        out.header_ = PacketHeader::from_raw(detail::load_be32(p));
 
         if (!out.header_.is_context()) {
             throw ParseError(ParseErrorCode::UnsupportedPacketType, "packet is not a supported context packet");
         }
         if (out.header_.trailer_included()) {
-            throw ParseError(ParseErrorCode::MalformedPacket, "context packets do not carry trailers in this implementation");
+            throw ParseError(ParseErrorCode::MalformedPacket, "context packets with trailers are outside this implementation's scope");
         }
 
         const auto packet_size_words = out.header_.packet_size_words();
@@ -874,6 +885,7 @@ public:
             out.class_id_ = ClassId::from_raw(detail::load_be64(p + offset));
             offset += 8U;
         }
+
         out.timestamp_.set_integer_type(out.header_.integer_timestamp_type());
         out.timestamp_.set_fractional_type(out.header_.fractional_timestamp_type());
         if (out.timestamp_.has_integer()) {
@@ -890,6 +902,7 @@ public:
             out.timestamp_.set_fractional(detail::load_be64(p + offset));
             offset += 8U;
         }
+
         if (offset + 4U > packet.size()) {
             throw ParseError(ParseErrorCode::BufferTooSmall, "missing CIF0 in context packet");
         }
@@ -899,7 +912,7 @@ public:
         const std::uint32_t unsupported = out.cif0_ & ~SupportedCif0::all;
         if (unsupported != 0U) {
             throw ParseError(ParseErrorCode::UnsupportedContextIndicators,
-                             "context packet uses CIF0 fields outside Vitality's common supported subset");
+                             "context packet uses CIF0 fields outside this library's supported common subset");
         }
 
         auto consume32 = [&](std::uint32_t bit, auto&& fn) {
@@ -921,30 +934,30 @@ public:
             }
         };
 
-        consume32(SupportedCif0::reference_point_id, [&](std::uint32_t raw) { out.ref_point_id_ = raw; });
-        consume64(SupportedCif0::bandwidth, [&](std::uint64_t raw) { out.bandwidth_ = detail::decode_q44_20(raw); });
-        consume64(SupportedCif0::if_reference_frequency, [&](std::uint64_t raw) { out.if_ref_freq_ = detail::decode_q44_20(raw); });
-        consume64(SupportedCif0::rf_reference_frequency, [&](std::uint64_t raw) { out.rf_ref_freq_ = detail::decode_q44_20(raw); });
-        consume64(SupportedCif0::rf_reference_frequency_offset, [&](std::uint64_t raw) { out.rf_ref_freq_offset_ = detail::decode_q44_20(raw); });
-        consume64(SupportedCif0::if_band_offset, [&](std::uint64_t raw) { out.if_band_offset_ = detail::decode_q44_20(raw); });
+        consume32(SupportedCif0::reference_point_id, [&](std::uint32_t raw) { out.reference_point_id_ = raw; });
+        consume64(SupportedCif0::bandwidth, [&](std::uint64_t raw) { out.bandwidth_hz_ = detail::decode_q44_20(raw); });
+        consume64(SupportedCif0::if_reference_frequency, [&](std::uint64_t raw) { out.if_reference_frequency_hz_ = detail::decode_q44_20(raw); });
+        consume64(SupportedCif0::rf_reference_frequency, [&](std::uint64_t raw) { out.rf_reference_frequency_hz_ = detail::decode_q44_20(raw); });
+        consume64(SupportedCif0::rf_reference_frequency_offset, [&](std::uint64_t raw) { out.rf_reference_frequency_offset_hz_ = detail::decode_q44_20(raw); });
+        consume64(SupportedCif0::if_band_offset, [&](std::uint64_t raw) { out.if_band_offset_hz_ = detail::decode_q44_20(raw); });
         consume32(SupportedCif0::reference_level, [&](std::uint32_t raw) {
-            out.reference_level_ = detail::decode_q8_7(static_cast<std::uint16_t>(raw & 0xFFFFU));
+            out.reference_level_dbm_ = detail::decode_q7(static_cast<std::uint16_t>(raw & 0xFFFFU));
         });
         consume32(SupportedCif0::gain, [&](std::uint32_t raw) {
-            out.gain_stage1_ = detail::decode_q8_7(static_cast<std::uint16_t>((raw >> 16U) & 0xFFFFU));
-            out.gain_stage2_ = detail::decode_q8_7(static_cast<std::uint16_t>(raw & 0xFFFFU));
+            out.gain_stage2_db_ = detail::decode_q7(static_cast<std::uint16_t>((raw >> 16U) & 0xFFFFU));
+            out.gain_stage1_db_ = detail::decode_q7(static_cast<std::uint16_t>(raw & 0xFFFFU));
         });
         consume32(SupportedCif0::over_range_count, [&](std::uint32_t raw) { out.over_range_count_ = raw; });
-        consume64(SupportedCif0::sample_rate, [&](std::uint64_t raw) { out.sample_rate_ = detail::decode_q44_20(raw); });
+        consume64(SupportedCif0::sample_rate, [&](std::uint64_t raw) { out.sample_rate_sps_ = detail::decode_q44_20(raw); });
         consume64(SupportedCif0::timestamp_adjustment, [&](std::uint64_t raw) {
-            out.timestamp_adjustment_ = detail::sign_extend_64(raw);
+            out.timestamp_adjustment_femtoseconds_ = detail::sign_extend_64(raw);
         });
-        consume32(SupportedCif0::timestamp_calibration_time, [&](std::uint32_t raw) { out.timestamp_calibration_time_ = raw; });
+        consume32(SupportedCif0::timestamp_calibration_time, [&](std::uint32_t raw) { out.timestamp_calibration_time_seconds_ = raw; });
         consume32(SupportedCif0::temperature, [&](std::uint32_t raw) {
-            out.temperature_ = detail::decode_q9_6(static_cast<std::uint16_t>(raw & 0xFFFFU));
+            out.temperature_celsius_ = detail::decode_q6(static_cast<std::uint16_t>(raw & 0xFFFFU));
         });
         consume32(SupportedCif0::device_identifier, [&](std::uint32_t raw) { out.device_identifier_ = raw; });
-        consume32(SupportedCif0::state_event_indicators, [&](std::uint32_t raw) { out.state_event_ = StateEventIndicators(raw); });
+        consume32(SupportedCif0::state_event_indicators, [&](std::uint32_t raw) { out.state_event_indicators_ = StateEventIndicators(raw); });
         consume64(SupportedCif0::signal_data_format, [&](std::uint64_t raw) {
             out.signal_data_format_ = SignalDataFormat::from_raw_words(static_cast<std::uint32_t>(raw >> 32U),
                                                                       static_cast<std::uint32_t>(raw & 0xFFFF'FFFFULL));
@@ -973,22 +986,22 @@ private:
     Timestamp timestamp_{};
     std::uint32_t cif0_ = 0;
 
-    std::optional<std::uint32_t> ref_point_id_{};
-    std::optional<double> bandwidth_{};
-    std::optional<double> if_ref_freq_{};
-    std::optional<double> rf_ref_freq_{};
-    std::optional<double> rf_ref_freq_offset_{};
-    std::optional<double> if_band_offset_{};
-    std::optional<double> reference_level_{};
-    std::optional<double> gain_stage1_{};
-    std::optional<double> gain_stage2_{};
+    std::optional<std::uint32_t> reference_point_id_{};
+    std::optional<double> bandwidth_hz_{};
+    std::optional<double> if_reference_frequency_hz_{};
+    std::optional<double> rf_reference_frequency_hz_{};
+    std::optional<double> rf_reference_frequency_offset_hz_{};
+    std::optional<double> if_band_offset_hz_{};
+    std::optional<double> reference_level_dbm_{};
+    std::optional<double> gain_stage1_db_{};
+    std::optional<double> gain_stage2_db_{};
     std::optional<std::uint32_t> over_range_count_{};
-    std::optional<double> sample_rate_{};
-    std::optional<std::int64_t> timestamp_adjustment_{};
-    std::optional<std::uint32_t> timestamp_calibration_time_{};
-    std::optional<double> temperature_{};
+    std::optional<double> sample_rate_sps_{};
+    std::optional<std::int64_t> timestamp_adjustment_femtoseconds_{};
+    std::optional<std::uint32_t> timestamp_calibration_time_seconds_{};
+    std::optional<double> temperature_celsius_{};
     std::optional<std::uint32_t> device_identifier_{};
-    std::optional<StateEventIndicators> state_event_{};
+    std::optional<StateEventIndicators> state_event_indicators_{};
     std::optional<SignalDataFormat> signal_data_format_{};
 };
 
@@ -1060,23 +1073,26 @@ public:
     [[nodiscard]] std::vector<byte> to_bytes() const {
         const auto payload_bytes = payload();
         if ((payload_bytes.size() % 4U) != 0U) {
-            throw std::invalid_argument("signal data payload must be padded to a 32-bit word boundary");
+            throw std::invalid_argument("signal-data payload must be padded to a 32-bit word boundary");
         }
-
-        std::vector<byte> out;
-        out.reserve(serialized_size_bytes());
+        const auto serialized_size = serialized_size_bytes();
+        if ((serialized_size % 4U) != 0U || (serialized_size / 4U) > std::numeric_limits<std::uint16_t>::max()) {
+            throw std::invalid_argument("packet does not fit the 16-bit packet-size field");
+        }
 
         PacketHeader wire_header = header_;
         wire_header.set_class_id_included(class_id_.has_value());
         wire_header.set_trailer_included(trailer_.has_value());
         wire_header.set_integer_timestamp_type(timestamp_.integer_type());
         wire_header.set_fractional_timestamp_type(timestamp_.fractional_type());
-        wire_header.set_packet_size_words(static_cast<std::uint16_t>(serialized_size_bytes() / 4U));
+        wire_header.set_packet_size_words(static_cast<std::uint16_t>(serialized_size / 4U));
 
+        std::vector<byte> out;
+        out.reserve(serialized_size);
         detail::append_be32(out, wire_header.raw());
         if (wire_header.has_stream_id()) {
             if (!stream_id_.has_value()) {
-                throw std::invalid_argument("stream ID is required when packet type includes stream ID");
+                throw std::invalid_argument("stream ID is required when the packet type includes stream ID");
             }
             detail::append_be32(out, *stream_id_);
         }
@@ -1192,12 +1208,12 @@ public:
     }
 
     [[nodiscard]] std::size_t serialized_size_bytes() const noexcept {
-        std::size_t size = 4U;  // header
-        size += 4U;             // stream id, always present for supported context packets
+        std::size_t size = 4U;
+        size += 4U;
         if (class_id_.has_value()) size += 8U;
         if (timestamp_.has_integer()) size += 4U;
         if (timestamp_.has_fractional()) size += 8U;
-        size += 4U; // CIF0
+        size += 4U;
         if (reference_point_id_.has_value()) size += 4U;
         if (bandwidth_hz_.has_value()) size += 8U;
         if (if_reference_frequency_hz_.has_value()) size += 8U;
@@ -1221,9 +1237,10 @@ public:
         if (!stream_id_.has_value()) {
             throw std::invalid_argument("context packets require a stream ID");
         }
-
-        std::vector<byte> out;
-        out.reserve(serialized_size_bytes());
+        const auto serialized_size = serialized_size_bytes();
+        if ((serialized_size % 4U) != 0U || (serialized_size / 4U) > std::numeric_limits<std::uint16_t>::max()) {
+            throw std::invalid_argument("packet does not fit the 16-bit packet-size field");
+        }
 
         PacketHeader wire_header = header_;
         wire_header.set_packet_type(PacketType::Context);
@@ -1231,8 +1248,10 @@ public:
         wire_header.set_trailer_included(false);
         wire_header.set_integer_timestamp_type(timestamp_.integer_type());
         wire_header.set_fractional_timestamp_type(timestamp_.fractional_type());
-        wire_header.set_packet_size_words(static_cast<std::uint16_t>(serialized_size_bytes() / 4U));
+        wire_header.set_packet_size_words(static_cast<std::uint16_t>(serialized_size / 4U));
 
+        std::vector<byte> out;
+        out.reserve(serialized_size);
         detail::append_be32(out, wire_header.raw());
         detail::append_be32(out, *stream_id_);
         if (class_id_.has_value()) {
@@ -1264,12 +1283,12 @@ public:
             detail::append_be64(out, detail::encode_q44_20(*if_band_offset_hz_));
         }
         if (reference_level_dbm_.has_value()) {
-            detail::append_be32(out, static_cast<std::uint32_t>(detail::encode_q8_7(*reference_level_dbm_)));
+            detail::append_be32(out, static_cast<std::uint32_t>(detail::encode_q7(*reference_level_dbm_)));
         }
         if (gain_db_.has_value()) {
-            const std::uint32_t stage1 = static_cast<std::uint32_t>(detail::encode_q8_7(gain_db_->first));
-            const std::uint32_t stage2 = static_cast<std::uint32_t>(detail::encode_q8_7(gain_db_->second));
-            detail::append_be32(out, (stage1 << 16U) | stage2);
+            const std::uint32_t stage2 = static_cast<std::uint32_t>(detail::encode_q7(gain_db_->second));
+            const std::uint32_t stage1 = static_cast<std::uint32_t>(detail::encode_q7(gain_db_->first));
+            detail::append_be32(out, (stage2 << 16U) | stage1);
         }
         if (over_range_count_.has_value()) {
             detail::append_be32(out, *over_range_count_);
@@ -1284,7 +1303,7 @@ public:
             detail::append_be32(out, *timestamp_calibration_time_seconds_);
         }
         if (temperature_celsius_.has_value()) {
-            detail::append_be32(out, static_cast<std::uint32_t>(detail::encode_q9_6(*temperature_celsius_)));
+            detail::append_be32(out, static_cast<std::uint32_t>(detail::encode_q6(*temperature_celsius_)));
         }
         if (device_identifier_.has_value()) {
             detail::append_be32(out, *device_identifier_);
@@ -1296,7 +1315,6 @@ public:
             detail::append_be32(out, signal_data_format_->raw_word0());
             detail::append_be32(out, signal_data_format_->raw_word1());
         }
-
         return out;
     }
 
@@ -1328,8 +1346,8 @@ private:
 using ParsedPacket = std::variant<SignalDataPacketView, ContextPacketView>;
 
 [[nodiscard]] inline ParsedPacket parse_packet(bytes_view packet) {
-    if (packet.size() < 1U) {
-        throw ParseError(ParseErrorCode::BufferTooSmall, "buffer is empty");
+    if (packet.size() < 4U) {
+        throw ParseError(ParseErrorCode::BufferTooSmall, "packet smaller than 4-byte VITA header");
     }
     const auto* p = detail::u8ptr(packet);
     const auto packet_type = static_cast<PacketType>((p[0] >> 4U) & 0x0FU);
@@ -1340,7 +1358,8 @@ using ParsedPacket = std::variant<SignalDataPacketView, ContextPacketView>;
         case PacketType::Context:
             return ContextPacketView::parse(packet);
         default:
-            throw ParseError(ParseErrorCode::UnsupportedPacketType, "Vitality only supports common signal-data and context packet types");
+            throw ParseError(ParseErrorCode::UnsupportedPacketType,
+                             "this library only supports common signal-data and context packet types");
     }
 }
 
@@ -1384,40 +1403,32 @@ template <typename T>
     return out;
 }
 
-
-
 using class_id = ClassId;
 using timestamp = Timestamp;
-using trailer = Trailer;
 using packet_header = PacketHeader;
+using trailer = Trailer;
 using state_event_indicators = StateEventIndicators;
 using parse_error = ParseError;
 using parse_error_code = ParseErrorCode;
-using packet_type = PacketType;
-using integer_timestamp_type = IntegerTimestampType;
-using fractional_timestamp_type = FractionalTimestampType;
-using real_complex_type = RealComplexType;
-using data_item_format = DataItemFormat;
-using packing_method = PackingMethod;
 
 namespace signal {
 using format = SignalDataFormat;
-}
-
-namespace view {
-using signal = SignalDataPacketView;
-using context = ContextPacketView;
-}
+} // namespace signal
 
 namespace packet {
 using signal = SignalDataPacket;
 using context = ContextPacket;
 using parsed = ParsedPacket;
 
-[[nodiscard]] inline parsed parse(bytes_view packet) {
-    return parse_packet(packet);
+[[nodiscard]] inline parsed parse(bytes_view packet_bytes) {
+    return parse_packet(packet_bytes);
 }
 } // namespace packet
+
+namespace view {
+using signal = SignalDataPacketView;
+using context = ContextPacketView;
+} // namespace view
 
 } // namespace vita
 

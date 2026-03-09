@@ -1435,15 +1435,29 @@ using parsed = ParsedPacket;
 }
 
 template <typename SignalFn, typename ContextFn>
-decltype(auto) dispatch(bytes_view packet_bytes, SignalFn&& signal_fn, ContextFn&& context_fn) {
+auto dispatch(bytes_view packet_bytes, SignalFn&& signal_fn, ContextFn&& context_fn) {
     auto parsed_packet = parse(packet_bytes);
     return std::visit(
-        [&](auto&& packet_view) -> decltype(auto) {
+        [&](auto&& packet_view) {
             using packet_view_type = std::remove_cvref_t<decltype(packet_view)>;
             if constexpr (std::is_same_v<packet_view_type, SignalDataPacketView>) {
-                return std::invoke(std::forward<SignalFn>(signal_fn), std::forward<decltype(packet_view)>(packet_view));
+                using signal_result_type = std::invoke_result_t<SignalFn&&, decltype(packet_view)>;
+                if constexpr (std::is_void_v<signal_result_type>) {
+                    std::invoke(std::forward<SignalFn>(signal_fn), std::forward<decltype(packet_view)>(packet_view));
+                } else {
+                    using signal_value_type = std::remove_cvref_t<signal_result_type>;
+                    return signal_value_type(
+                        std::invoke(std::forward<SignalFn>(signal_fn), std::forward<decltype(packet_view)>(packet_view)));
+                }
             } else {
-                return std::invoke(std::forward<ContextFn>(context_fn), std::forward<decltype(packet_view)>(packet_view));
+                using context_result_type = std::invoke_result_t<ContextFn&&, decltype(packet_view)>;
+                if constexpr (std::is_void_v<context_result_type>) {
+                    std::invoke(std::forward<ContextFn>(context_fn), std::forward<decltype(packet_view)>(packet_view));
+                } else {
+                    using context_value_type = std::remove_cvref_t<context_result_type>;
+                    return context_value_type(
+                        std::invoke(std::forward<ContextFn>(context_fn), std::forward<decltype(packet_view)>(packet_view)));
+                }
             }
         },
         parsed_packet);

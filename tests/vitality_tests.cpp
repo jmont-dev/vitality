@@ -235,6 +235,37 @@ TEST_CASE("packet::dispatch invokes matching callback for signal and context vie
     CHECK(context_called);
 }
 
+TEST_CASE("packet::dispatch returns values even when callbacks return references") {
+    std::vector<vita::byte> payload = {vita::byte{0}, vita::byte{1}, vita::byte{2}, vita::byte{3}};
+
+    vita::packet::signal sig;
+    sig.set_stream_id(0x01020304u);
+    sig.set_payload_view(vita::bytes_view{payload.data(), payload.size()});
+    const auto sig_bytes = sig.to_bytes();
+
+    const auto signal_header = vita::packet::dispatch(
+        vita::as_bytes_view(sig_bytes),
+        [](const vita::view::signal& view) -> const vita::packet_header& { return view.header(); },
+        [](const vita::view::context& view) -> const vita::packet_header& { return view.header(); });
+
+    static_assert(!std::is_reference_v<decltype(signal_header)>);
+    CHECK(signal_header.packet_type() == vita::PacketType::SignalData);
+    CHECK(signal_header.has_stream_id());
+
+    vita::packet::context ctx;
+    ctx.set_stream_id(0x12345678u);
+    const auto ctx_bytes = ctx.to_bytes();
+
+    const auto context_header = vita::packet::dispatch(
+        vita::as_bytes_view(ctx_bytes),
+        [](const vita::view::signal& view) -> const vita::packet_header& { return view.header(); },
+        [](const vita::view::context& view) -> const vita::packet_header& { return view.header(); });
+
+    static_assert(!std::is_reference_v<decltype(context_header)>);
+    CHECK(context_header.packet_type() == vita::PacketType::Context);
+    CHECK(context_header.has_stream_id());
+}
+
 TEST_CASE("byteswap helpers cover common wire types") {
     CHECK(vita::byteswap16(std::uint16_t{0x1234u}) == 0x3412u);
     CHECK(vita::byteswap32(std::uint32_t{0x11223344u}) == 0x44332211u);

@@ -41,16 +41,45 @@ Packets that rely on unsupported CIF0/CIF1/CIF2/CIF3/CIF7 sections are rejected 
 
 ## Wire endianness
 
-Vitality treats VITA packet metadata as **network-order / big-endian** on the wire and always converts those fields explicitly with byte-shifts.
-That means:
+Vitality treats VITA packet metadata as **network-order / big-endian** on the wire and always converts those fields explicitly with byte shifts. That means:
 
-- Header fields are decoded correctly on little-endian and big-endian hosts.
-- Context fields like frequencies, sample rate, timestamps, and class IDs are normalized automatically.
-- Serialization always writes canonical big-endian wire bytes.
+- header fields are decoded correctly on little-endian and big-endian hosts
+- context fields like frequencies, sample rate, timestamps, and class IDs are normalized automatically
+- serialization always writes canonical big-endian wire bytes
 
-For **signal payload bytes**, Vitality intentionally does **not** reinterpret or byte-swap sample data automatically.
-The payload is exposed as a byte view because sample word order can depend on the stream's payload format and device conventions.
-That keeps parsing zero-copy and avoids making assumptions about SDR sample layout.
+For **signal payload bytes**, Vitality intentionally does **not** reinterpret or byte-swap sample data automatically. The payload is exposed as a byte view because sample word order can depend on the stream's payload format and device conventions. That keeps parsing zero-copy and avoids making assumptions about SDR sample layout.
+
+To help with the common cases, the library now includes byte-swap helpers directly in the public API:
+
+- `vitality::byteswap16(...)`
+- `vitality::byteswap32(...)`
+- `vitality::byteswap64(...)`
+- `vitality::byteswap(...)`
+- `vitality::byteswap_inplace(...)`
+- `vitality::host_is_little_endian()`
+- `vitality::host_is_big_endian()`
+
+The generic `byteswap(...)` and `byteswap_inplace(...)` helpers support the standard payload types users most often run into in VITA streams:
+
+- `std::uint16_t` / `std::int16_t`
+- `std::uint32_t` / `std::int32_t`
+- `std::uint64_t` / `std::int64_t`
+- `float`
+- `double`
+- `std::complex<float>`
+- `std::complex<double>`
+
+Example:
+
+```cpp
+std::vector<std::complex<float>> iq = {{1.0f, -1.0f}, {0.5f, 0.25f}};
+
+if (vitality::host_is_little_endian()) {
+    vitality::byteswap_inplace(std::span<std::complex<float>>{iq});
+}
+```
+
+Apply those helpers only when your payload word order actually differs from your host byte order.
 
 ## Main types
 
@@ -70,9 +99,21 @@ These views point into the original input buffer.
 
 These own or reference the data you want to serialize back onto the wire.
 
+## Byte views for typed payloads
+
+For payloads such as `std::vector<std::complex<float>>`, Vitality provides convenient helpers:
+
+- `vitality::as_bytes_view(std::vector<T>)`
+- `vitality::as_bytes_view(std::span<const T>)`
+- `vitality::as_writable_bytes_view(std::vector<T>)`
+- `vitality::as_writable_bytes_view(std::span<T>)`
+
+That makes it easy to move between typed sample buffers and packet payload views without manual pointer casts.
+
 ## Example
 
 ```cpp
+#include <complex>
 #include <iostream>
 #include <vector>
 
@@ -81,42 +122,32 @@ These own or reference the data you want to serialize back onto the wire.
 int main() {
     using namespace vitality;
 
-    ContextPacket ctx;
-    ctx.set_stream_id(0xDEADBEEFu);
-    ctx.set_change_indicator(true);
-    ctx.set_bandwidth_hz(8.0e6);
-    ctx.set_rf_reference_frequency_hz(100.0e6);
-    ctx.set_sample_rate_sps(10.0e6);
+    std::vector<std::complex<float>> iq = {
+        {1.0f, -1.0f},
+        {0.5f, 0.25f},
+    };
 
-    SignalDataFormat fmt;
-    fmt.set_packing_method(PackingMethod::ProcessingEfficient);
-    fmt.set_real_complex_type(RealComplexType::ComplexCartesian);
-    fmt.set_data_item_format(DataItemFormat::SignedFixedPoint);
-    fmt.set_data_item_size(16);
-    fmt.set_item_packing_field_size(16);
-    ctx.set_signal_data_format(fmt);
+    SignalDataPacket packet;
+    packet.set_stream_id(0xDEADBEEFu);
+    packet.set_payload_view(as_bytes_view(iq));
 
-    auto ctx_bytes = ctx.to_bytes();
-    auto parsed_ctx = std::get<ContextPacketView>(parse_packet(as_bytes_view(ctx_bytes)));
+    auto wire_bytes = packet.to_bytes();
+    auto parsed = SignalDataPacketView::parse(as_bytes_view(wire_bytes));
 
-    std::cout << parsed_ctx.rf_reference_frequency_hz() << "\n";
+    std::vector<std::complex<float>> recovered(iq.size());
+    std::memcpy(recovered.data(), parsed.payload().data(), parsed.payload().size());
 
-    std::vector<byte> iq(16);
-    SignalDataPacket sig;
-    sig.set_stream_id(0xDEADBEEFu);
-    sig.set_payload_view(bytes_view{iq.data(), iq.size()});
-
-    auto sig_bytes = sig.to_bytes();
-    auto parsed_sig = std::get<SignalDataPacketView>(parse_packet(as_bytes_view(sig_bytes)));
-    std::cout << parsed_sig.payload().size() << "\n";
+    std::cout << "stream id = 0x" << std::hex << parsed.stream_id().value() << std::dec << "\n";
+    std::cout << "first I sample = " << recovered.front().real() << "\n";
 }
 ```
 
 ## Build
 
-Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework. There are two examples: `examples/basic.cpp` for in-memory round-tripping and `examples/socket.cpp` for a minimal `std::vector<std::complex<float>>` -> UDP send -> `recvfrom` -> `SignalDataPacketView` flow.
+Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework. There are two examples:
 
-The socket example also includes a tiny helper that byte-swaps 32-bit float components in-place. Use that only when your payload convention expects float32 words in the opposite byte order from your host. Vitality handles VITA metadata endianness for you, but payload sample endianness is always application-defined.
+- `examples/basic.cpp` for in-memory packet round-tripping
+- `examples/socket.cpp` for the minimal `std::vector<std::complex<float>>` -> UDP `sendto` -> `recvfrom` -> `SignalDataPacketView` flow
 
 ```cpp
 #include "vitality/vitality.hpp"
@@ -128,14 +159,11 @@ or, if you want the single-file drop-in form:
 #include "Vitality.hpp"
 ```
 
-Compile with a C++20 compiler because the library uses `std::span`.
+Compile with a C++20 compiler because the library uses `std::span` and `std::bit_cast`.
 
 ## Notes on scope
 
-VITA 49.2 is intentionally very flexible and many real SDR deployments use specialized subsets.
-Vitality focuses on the common signal/context path and keeps unsupported advanced sections explicit.
-That keeps the API small, predictable, and fast for the common case.
-
+VITA 49.2 is intentionally very flexible and many real SDR deployments use specialized subsets. Vitality focuses on the common signal/context path and keeps unsupported advanced sections explicit. That keeps the API small, predictable, and fast for the common case.
 
 ## Tests
 
@@ -152,7 +180,6 @@ The current test suite covers:
 - signal-data serialize/parse round-trips
 - context serialize/parse round-trips for the supported CIF0 subset
 - packet-type dispatch through `parse_packet(...)`
-- big-endian wire encoding for metadata fields
+- byte-swap helpers for common payload types
 - localhost UDP socket send/receive integration for context and complex-float signal packets
-- float32 payload byte-swap helper round-trip behavior
 - error handling for malformed packet sizes, unsupported indicators, missing required fields, and invalid serialization inputs

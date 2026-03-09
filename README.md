@@ -114,7 +114,7 @@ int main() {
 
 ## Build
 
-Vitality is header-only.
+Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework.
 
 ```cpp
 #include "vitality/vitality.hpp"
@@ -133,3 +133,22 @@ Compile with a C++20 compiler because the library uses `std::span`.
 VITA 49.2 is intentionally very flexible and many real SDR deployments use specialized subsets.
 Vitality focuses on the common signal/context path and keeps unsupported advanced sections explicit.
 That keeps the API small, predictable, and fast for the common case.
+
+
+## Tests
+
+Configure and build as usual with CMake, then run the test target:
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The current test suite covers:
+
+- signal-data serialize/parse round-trips
+- context serialize/parse round-trips for the supported CIF0 subset
+- packet-type dispatch through `parse_packet(...)`
+- big-endian wire encoding for metadata fields
+- error handling for malformed packet sizes, unsupported indicators, missing required fields, and invalid serialization inputs

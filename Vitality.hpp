@@ -193,7 +193,12 @@ inline void append_be64(std::vector<byte>& out, std::uint64_t value) {
 }
 
 inline void append_bytes(std::vector<byte>& out, bytes_view payload) {
-    out.insert(out.end(), payload.begin(), payload.end());
+    if (payload.empty()) {
+        return;
+    }
+    const auto start = out.size();
+    out.resize(start + payload.size());
+    std::memcpy(out.data() + start, payload.data(), payload.size());
 }
 
 [[nodiscard]] constexpr std::uint32_t packet_header_word(std::uint8_t packet_type,
@@ -1399,16 +1404,16 @@ template <typename T>
 
 [[nodiscard]] inline std::vector<byte> from_u8(const std::vector<std::uint8_t>& bytes) {
     std::vector<byte> out(bytes.size());
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        out[i] = static_cast<byte>(bytes[i]);
+    if (!bytes.empty()) {
+        std::memcpy(out.data(), bytes.data(), bytes.size());
     }
     return out;
 }
 
 [[nodiscard]] inline std::vector<std::uint8_t> to_u8(bytes_view bytes) {
     std::vector<std::uint8_t> out(bytes.size());
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        out[i] = std::to_integer<std::uint8_t>(bytes[i]);
+    if (!bytes.empty()) {
+        std::memcpy(out.data(), bytes.data(), bytes.size());
     }
     return out;
 }

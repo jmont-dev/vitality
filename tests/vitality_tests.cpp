@@ -4,11 +4,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <complex>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -42,6 +45,42 @@ void expect_parse_error(const std::function<void()>& fn, vitality::ParseErrorCod
 
 void expect_invalid_argument(const std::function<void()>& fn) {
     CHECK_THROWS_AS(fn(), std::invalid_argument);
+}
+
+[[nodiscard]] std::vector<byte> copy_to_payload_bytes(const std::vector<std::complex<float>>& samples) {
+    std::vector<byte> payload(samples.size() * sizeof(std::complex<float>));
+    std::memcpy(payload.data(), samples.data(), payload.size());
+    return payload;
+}
+
+[[nodiscard]] std::vector<std::complex<float>> copy_from_payload_bytes(bytes_view payload) {
+    if (payload.size() % sizeof(std::complex<float>) != 0) {
+        throw std::runtime_error("payload size is not a whole number of std::complex<float> samples");
+    }
+
+    std::vector<std::complex<float>> samples(payload.size() / sizeof(std::complex<float>));
+    std::memcpy(samples.data(), payload.data(), payload.size());
+    return samples;
+}
+
+[[nodiscard]] std::uint32_t byteswap32(std::uint32_t value) {
+    return ((value & 0x000000FFu) << 24u) |
+           ((value & 0x0000FF00u) << 8u) |
+           ((value & 0x00FF0000u) >> 8u) |
+           ((value & 0xFF000000u) >> 24u);
+}
+
+void byteswap_float32_components_inplace(std::vector<byte>& payload) {
+    if (payload.size() % sizeof(std::uint32_t) != 0) {
+        throw std::runtime_error("float32 payload must be a multiple of 4 bytes");
+    }
+
+    for (std::size_t offset = 0; offset < payload.size(); offset += sizeof(std::uint32_t)) {
+        std::uint32_t word = 0;
+        std::memcpy(&word, payload.data() + offset, sizeof(word));
+        word = byteswap32(word);
+        std::memcpy(payload.data() + offset, &word, sizeof(word));
+    }
 }
 
 #if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
@@ -416,7 +455,7 @@ TEST_CASE("context view missing field accessor throws") {
                        ParseErrorCode::MissingRequiredField);
 }
 
-TEST_CASE("socket loopback round trips context and signal packets") {
+TEST_CASE("socket loopback round trips context and complex-float signal packets") {
     using namespace vitality;
 
 #if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
@@ -433,15 +472,17 @@ TEST_CASE("socket loopback round trips context and signal packets") {
     SignalDataFormat format;
     format.set_packing_method(PackingMethod::ProcessingEfficient);
     format.set_real_complex_type(RealComplexType::ComplexCartesian);
-    format.set_data_item_format(DataItemFormat::SignedFixedPoint);
-    format.set_data_item_size(16);
-    format.set_item_packing_field_size(16);
+    format.set_data_item_format(DataItemFormat::IEEE754Single);
+    format.set_data_item_size(32);
+    format.set_item_packing_field_size(32);
     context.set_signal_data_format(format);
 
-    std::vector<byte> payload = {
-        byte{0x12}, byte{0x34}, byte{0x56}, byte{0x78},
-        byte{0x9A}, byte{0xBC}, byte{0xDE}, byte{0xF0},
+    std::vector<std::complex<float>> tx_samples = {
+        {1.0f, -1.0f},
+        {0.25f, 0.5f},
+        {-0.75f, 0.125f},
     };
+    std::vector<byte> payload = copy_to_payload_bytes(tx_samples);
 
     Timestamp ts;
     ts.set_integer_type(IntegerTimestampType::UTC);
@@ -479,9 +520,9 @@ TEST_CASE("socket loopback round trips context and signal packets") {
             REQUIRE(parsed_context.has_signal_data_format());
             const auto parsed_format = parsed_context.signal_data_format();
             CHECK(static_cast<int>(parsed_format.real_complex_type()) == static_cast<int>(RealComplexType::ComplexCartesian));
-            CHECK(static_cast<int>(parsed_format.data_item_format()) == static_cast<int>(DataItemFormat::SignedFixedPoint));
-            CHECK(parsed_format.data_item_size() == 16u);
-            CHECK(parsed_format.item_packing_field_size() == 16u);
+            CHECK(static_cast<int>(parsed_format.data_item_format()) == static_cast<int>(DataItemFormat::IEEE754Single));
+            CHECK(parsed_format.data_item_size() == 32u);
+            CHECK(parsed_format.item_packing_field_size() == 32u);
         } else {
             const auto& parsed_signal = std::get<SignalDataPacketView>(parsed);
             saw_signal = true;
@@ -492,8 +533,12 @@ TEST_CASE("socket loopback round trips context and signal packets") {
             CHECK(parsed_signal.timestamp().integer_seconds() == 12345u);
             CHECK(parsed_signal.timestamp().fractional() == 67890u);
             REQUIRE(parsed_signal.payload().size() == payload.size());
-            for (std::size_t j = 0; j < payload.size(); ++j) {
-                CHECK(u8(parsed_signal.payload()[j]) == u8(payload[j]));
+
+            const auto rx_samples = copy_from_payload_bytes(parsed_signal.payload());
+            REQUIRE(rx_samples.size() == tx_samples.size());
+            for (std::size_t j = 0; j < tx_samples.size(); ++j) {
+                CHECK(rx_samples[j].real() == doctest::Approx(tx_samples[j].real()));
+                CHECK(rx_samples[j].imag() == doctest::Approx(tx_samples[j].imag()));
             }
         }
     }
@@ -503,4 +548,26 @@ TEST_CASE("socket loopback round trips context and signal packets") {
 #else
     DOCTEST_SKIP("POSIX sockets are not available on this platform");
 #endif
+}
+
+TEST_CASE("byteswap helper round trips complex float payload") {
+    std::vector<std::complex<float>> tx_samples = {
+        {1.0f, -1.0f},
+        {0.25f, 0.5f},
+        {-0.75f, 0.125f},
+    };
+
+    auto payload = copy_to_payload_bytes(tx_samples);
+    auto swapped = payload;
+    byteswap_float32_components_inplace(swapped);
+    CHECK(swapped != payload);
+
+    byteswap_float32_components_inplace(swapped);
+    const auto rx_samples = copy_from_payload_bytes(bytes_view{swapped.data(), swapped.size()});
+
+    REQUIRE(rx_samples.size() == tx_samples.size());
+    for (std::size_t i = 0; i < tx_samples.size(); ++i) {
+        CHECK(rx_samples[i].real() == doctest::Approx(tx_samples[i].real()));
+        CHECK(rx_samples[i].imag() == doctest::Approx(tx_samples[i].imag()));
+    }
 }

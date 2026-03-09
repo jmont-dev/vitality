@@ -1,23 +1,17 @@
 #include <array>
-#include <cerrno>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <iostream>
-#include <optional>
 #include <stdexcept>
-#include <string>
 #include <system_error>
-#include <utility>
-#include <variant>
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <unistd.h>
 #else
 #error "examples/socket.cpp currently requires POSIX sockets"
@@ -30,81 +24,97 @@ namespace {
 using vitality::byte;
 using vitality::bytes_view;
 
-class UdpSocket {
-public:
-    explicit UdpSocket(int fd = -1) noexcept : fd_(fd) {}
-    ~UdpSocket() {
-        if (fd_ >= 0) {
-            ::close(fd_);
+struct Socket {
+    explicit Socket(int fd = -1) noexcept : fd(fd) {}
+    ~Socket() {
+        if (fd >= 0) {
+            ::close(fd);
         }
     }
 
-    UdpSocket(const UdpSocket&) = delete;
-    UdpSocket& operator=(const UdpSocket&) = delete;
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
 
-    UdpSocket(UdpSocket&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
-    UdpSocket& operator=(UdpSocket&& other) noexcept {
+    Socket(Socket&& other) noexcept : fd(other.fd) { other.fd = -1; }
+    Socket& operator=(Socket&& other) noexcept {
         if (this != &other) {
-            if (fd_ >= 0) {
-                ::close(fd_);
+            if (fd >= 0) {
+                ::close(fd);
             }
-            fd_ = std::exchange(other.fd_, -1);
+            fd = other.fd;
+            other.fd = -1;
         }
         return *this;
     }
 
-    [[nodiscard]] int get() const noexcept { return fd_; }
-
-private:
-    int fd_;
+    int fd;
 };
 
-struct BoundReceiver {
-    UdpSocket socket;
-    sockaddr_in address{};
-};
-
-[[nodiscard]] UdpSocket make_udp_socket() {
+[[nodiscard]] Socket make_udp_socket() {
     const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
         throw std::system_error(errno, std::generic_category(), "socket");
     }
-    return UdpSocket(fd);
+    return Socket(fd);
 }
 
-void set_receive_timeout(int fd, int seconds) {
-    timeval timeout{};
-    timeout.tv_sec = seconds;
-    timeout.tv_usec = 0;
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
-        throw std::system_error(errno, std::generic_category(), "setsockopt(SO_RCVTIMEO)");
-    }
-}
+[[nodiscard]] sockaddr_in bind_loopback_receiver(int fd) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(0);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-[[nodiscard]] BoundReceiver bind_loopback_receiver() {
-    BoundReceiver receiver{make_udp_socket(), {}};
-    set_receive_timeout(receiver.socket.get(), 1);
-
-    receiver.address.sin_family = AF_INET;
-    receiver.address.sin_port = htons(0);
-    receiver.address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    if (::bind(receiver.socket.get(), reinterpret_cast<const sockaddr*>(&receiver.address), sizeof(receiver.address)) != 0) {
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
         throw std::system_error(errno, std::generic_category(), "bind");
     }
 
-    socklen_t address_size = sizeof(receiver.address);
-    if (::getsockname(receiver.socket.get(), reinterpret_cast<sockaddr*>(&receiver.address), &address_size) != 0) {
+    socklen_t size = sizeof(address);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) != 0) {
         throw std::system_error(errno, std::generic_category(), "getsockname");
     }
 
-    return receiver;
+    return address;
+}
+
+[[nodiscard]] std::vector<byte> copy_to_payload_bytes(const std::vector<std::complex<float>>& samples) {
+    std::vector<byte> payload(samples.size() * sizeof(std::complex<float>));
+    std::memcpy(payload.data(), samples.data(), payload.size());
+    return payload;
+}
+
+[[nodiscard]] std::vector<std::complex<float>> copy_from_payload_bytes(bytes_view payload) {
+    if (payload.size() % sizeof(std::complex<float>) != 0) {
+        throw std::runtime_error("payload size is not a whole number of std::complex<float> samples");
+    }
+
+    std::vector<std::complex<float>> samples(payload.size() / sizeof(std::complex<float>));
+    std::memcpy(samples.data(), payload.data(), payload.size());
+    return samples;
+}
+
+[[nodiscard]] std::uint32_t byteswap32(std::uint32_t value) {
+    return ((value & 0x000000FFu) << 24u) |
+           ((value & 0x0000FF00u) << 8u) |
+           ((value & 0x00FF0000u) >> 8u) |
+           ((value & 0xFF000000u) >> 24u);
+}
+
+void byteswap_float32_components_inplace(std::vector<byte>& payload) {
+    if (payload.size() % sizeof(std::uint32_t) != 0) {
+        throw std::runtime_error("float32 payload must be a multiple of 4 bytes");
+    }
+
+    for (std::size_t offset = 0; offset < payload.size(); offset += sizeof(std::uint32_t)) {
+        std::uint32_t word = 0;
+        std::memcpy(&word, payload.data() + offset, sizeof(word));
+        word = byteswap32(word);
+        std::memcpy(payload.data() + offset, &word, sizeof(word));
+    }
 }
 
 void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
-    const auto* data = reinterpret_cast<const void*>(bytes.data());
     const auto sent = ::sendto(fd,
-                               data,
+                               bytes.data(),
                                bytes.size(),
                                0,
                                reinterpret_cast<const sockaddr*>(&destination),
@@ -118,12 +128,12 @@ void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
 }
 
 [[nodiscard]] std::vector<byte> receive_datagram(int fd) {
-    std::array<byte, 65536> buffer{};
+    std::array<byte, 2048> buffer{};
     sockaddr_in source{};
     socklen_t source_size = sizeof(source);
 
     const auto received = ::recvfrom(fd,
-                                     reinterpret_cast<void*>(buffer.data()),
+                                     buffer.data(),
                                      buffer.size(),
                                      0,
                                      reinterpret_cast<sockaddr*>(&source),
@@ -135,68 +145,63 @@ void send_datagram(int fd, const sockaddr_in& destination, bytes_view bytes) {
     return std::vector<byte>(buffer.begin(), buffer.begin() + received);
 }
 
-std::string packet_kind_name(const vitality::ParsedPacket& packet) {
-    if (std::holds_alternative<vitality::ContextPacketView>(packet)) {
-        return "context";
-    }
-    return "signal";
-}
-
 } // namespace
 
 int main() {
     using namespace vitality;
 
     try {
-        auto receiver = bind_loopback_receiver();
-        auto sender = make_udp_socket();
-
-        ContextPacket context;
-        context.set_stream_id(0x12345678u);
-        context.set_change_indicator(true);
-        context.set_bandwidth_hz(5.0e6);
-        context.set_rf_reference_frequency_hz(915.0e6);
-        context.set_sample_rate_sps(7.68e6);
-
-        SignalDataFormat format;
-        format.set_packing_method(PackingMethod::ProcessingEfficient);
-        format.set_real_complex_type(RealComplexType::ComplexCartesian);
-        format.set_data_item_format(DataItemFormat::SignedFixedPoint);
-        format.set_data_item_size(16);
-        format.set_item_packing_field_size(16);
-        context.set_signal_data_format(format);
-
-        std::vector<byte> iq_samples = {
-            byte{0x00}, byte{0x01}, byte{0x00}, byte{0x02},
-            byte{0x00}, byte{0x03}, byte{0x00}, byte{0x04},
+        // Start with normal in-memory IQ samples.
+        std::vector<std::complex<float>> tx_samples = {
+            {1.0f, -1.0f},
+            {0.25f, 0.5f},
+            {-0.75f, 0.125f},
         };
 
-        SignalDataPacket signal;
-        signal.set_stream_id(0x12345678u);
-        signal.set_payload_view(bytes_view{iq_samples.data(), iq_samples.size()});
+        // Vitality exposes payloads as bytes so it does not guess the sample format.
+        // For localhost on the same machine, copying the native std::complex<float>
+        // bytes is usually enough for a simple example.
+        std::vector<byte> payload = copy_to_payload_bytes(tx_samples);
 
-        const auto context_bytes = context.to_bytes();
-        const auto signal_bytes = signal.to_bytes();
+        // If your radio or protocol profile expects float32 components in big-endian
+        // order, byte-swap each 32-bit I/Q component before sending:
+        //
+        //   byteswap_float32_components_inplace(payload);
+        //
+        // And after receiving, run the same helper again before copying back into
+        // std::complex<float> values on a little-endian host.
 
-        send_datagram(sender.get(), receiver.address, as_bytes_view(context_bytes));
-        send_datagram(sender.get(), receiver.address, as_bytes_view(signal_bytes));
+        SignalDataPacket packet;
+        packet.set_stream_id(0x12345678u);
+        packet.set_payload_view(bytes_view{payload.data(), payload.size()});
 
-        for (int i = 0; i < 2; ++i) {
-            auto received = receive_datagram(receiver.socket.get());
-            const auto parsed = parse_packet(as_bytes_view(received));
+        Socket receiver = make_udp_socket();
+        const sockaddr_in receiver_address = bind_loopback_receiver(receiver.fd);
+        Socket sender = make_udp_socket();
 
-            std::cout << "received " << packet_kind_name(parsed) << " packet (" << received.size() << " bytes)\n";
+        const auto wire_bytes = packet.to_bytes();
+        send_datagram(sender.fd, receiver_address, as_bytes_view(wire_bytes));
 
-            if (std::holds_alternative<ContextPacketView>(parsed)) {
-                const auto& ctx = std::get<ContextPacketView>(parsed);
-                std::cout << "  stream id: 0x" << std::hex << ctx.stream_id().value() << std::dec << "\n";
-                std::cout << "  rf center: " << ctx.rf_reference_frequency_hz() << " Hz\n";
-                std::cout << "  sample rate: " << ctx.sample_rate_sps() << " sps\n";
-            } else {
-                const auto& sig = std::get<SignalDataPacketView>(parsed);
-                std::cout << "  stream id: 0x" << std::hex << sig.stream_id().value() << std::dec << "\n";
-                std::cout << "  payload bytes: " << sig.payload().size() << "\n";
-            }
+        std::vector<byte> received_bytes = receive_datagram(receiver.fd);
+        SignalDataPacketView received = SignalDataPacketView::parse(as_bytes_view(received_bytes));
+
+        std::cout << "stream id: 0x" << std::hex << received.stream_id().value() << std::dec << "\n";
+        std::cout << "payload bytes: " << received.payload().size() << "\n";
+
+        // This copies into typed samples safely. Vitality itself already parsed the
+        // packet zero-copy; this extra copy is only to materialize std::complex<float>.
+        std::vector<std::complex<float>> rx_samples = copy_from_payload_bytes(received.payload());
+
+        // If the payload was byte-swapped before send, undo it first:
+        //
+        //   std::vector<byte> payload_copy(received.payload().begin(), received.payload().end());
+        //   byteswap_float32_components_inplace(payload_copy);
+        //   rx_samples = copy_from_payload_bytes(bytes_view{payload_copy.data(), payload_copy.size()});
+
+        for (std::size_t i = 0; i < rx_samples.size(); ++i) {
+            std::cout << "sample[" << i << "] = ("
+                      << rx_samples[i].real() << ", "
+                      << rx_samples[i].imag() << ")\n";
         }
 
         return 0;

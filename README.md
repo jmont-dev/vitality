@@ -114,7 +114,9 @@ int main() {
 
 ## Build
 
-Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework. There are two examples: `examples/basic.cpp` for in-memory round-tripping and `examples/socket.cpp` for sending VITA packets over a localhost UDP socket and parsing them on receipt.
+Vitality is header-only for library consumers, and the repository also includes a small unit test suite built with the vendored single-header doctest framework. There are two examples: `examples/basic.cpp` for in-memory round-tripping and `examples/socket.cpp` for a minimal `std::vector<std::complex<float>>` -> UDP send -> `recvfrom` -> `SignalDataPacketView` flow.
+
+The socket example also includes a tiny helper that byte-swaps 32-bit float components in-place. Use that only when your payload convention expects float32 words in the opposite byte order from your host. Vitality handles VITA metadata endianness for you, but payload sample endianness is always application-defined.
 
 ```cpp
 #include "vitality/vitality.hpp"
@@ -151,5 +153,6 @@ The current test suite covers:
 - context serialize/parse round-trips for the supported CIF0 subset
 - packet-type dispatch through `parse_packet(...)`
 - big-endian wire encoding for metadata fields
-- localhost UDP socket send/receive integration for context and signal packets
+- localhost UDP socket send/receive integration for context and complex-float signal packets
+- float32 payload byte-swap helper round-trip behavior
 - error handling for malformed packet sizes, unsupported indicators, missing required fields, and invalid serialization inputs

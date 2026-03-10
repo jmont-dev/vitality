@@ -7,29 +7,10 @@
 
 #include <complex>
 #include <cstring>
-#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <system_error>
 #include <vector>
-
-struct PacketHandler {
-    void on_signal(const vita::view::signal& view) const {
-        std::vector<std::complex<float>> samples(view.payload().size() / sizeof(std::complex<float>));
-        std::memcpy(samples.data(), view.payload().data(), view.payload().size());
-
-        std::cout << "signal stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec << "\n";
-        for (const auto& sample : samples) {
-            std::cout << "  " << sample.real() << ", " << sample.imag() << "\n";
-        }
-    }
-
-    void on_context(const vita::view::context& view) const {
-        std::cout << "context stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec
-                  << ", sample-rate=" << (view.has_sample_rate_sps() ? "present" : "missing")
-                  << ", temperature=" << (view.has_temperature_celsius() ? "present" : "missing") << "\n";
-    }
-};
 
 int main() {
     std::vector<std::complex<float>> tx_samples = {
@@ -84,9 +65,21 @@ int main() {
     send_packet(vita::as_bytes_view(signal_wire_bytes));
     send_packet(vita::as_bytes_view(context_wire_bytes));
 
-    PacketHandler handler;
-    auto signal_handler = std::bind(&PacketHandler::on_signal, &handler, std::placeholders::_1);
-    auto context_handler = std::bind(&PacketHandler::on_context, &handler, std::placeholders::_1);
+    const auto signal_handler = [](const vita::view::signal& view) {
+        std::vector<std::complex<float>> samples(view.payload().size() / sizeof(std::complex<float>));
+        std::memcpy(samples.data(), view.payload().data(), view.payload().size());
+
+        std::cout << "signal stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec << "\n";
+        for (const auto& sample : samples) {
+            std::cout << "  " << sample.real() << ", " << sample.imag() << "\n";
+        }
+    };
+
+    const auto context_handler = [](const vita::view::context& view) {
+        std::cout << "context stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec
+                  << ", sample-rate=" << (view.has_sample_rate_sps() ? "present" : "missing")
+                  << ", temperature=" << (view.has_temperature_celsius() ? "present" : "missing") << "\n";
+    };
 
     for (int i = 0; i < 2; ++i) {
         std::vector<vita::byte> recv_buffer(2048);

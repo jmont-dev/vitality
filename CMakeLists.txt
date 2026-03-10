@@ -16,6 +16,9 @@ target_link_libraries(vitality_basic_example PRIVATE Vitality)
 add_executable(vitality_decode_format_example examples/decode_format.cpp)
 target_link_libraries(vitality_decode_format_example PRIVATE Vitality)
 
+add_executable(vitality_fixed_i16_to_f32_example examples/fixed_i16_to_f32.cpp)
+target_link_libraries(vitality_fixed_i16_to_f32_example PRIVATE Vitality)
+
 if(UNIX)
     add_executable(vitality_socket_example examples/socket.cpp)
     target_link_libraries(vitality_socket_example PRIVATE Vitality)

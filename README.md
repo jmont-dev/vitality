@@ -1,4 +1,4 @@
-# Vitality - Header-only VITA 49 support in C++
+# Vitality - Header-only VITA 49 for C++
 
 Vitality is a small header-only C++20-26 library for working with signal and context packets from the **VITA 49.2** radio standard. This standard defines common wire formats for interfacing with software-defined radios.
 

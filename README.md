@@ -41,6 +41,7 @@ It is designed around two goals:
 ### Handle signal or context packets
 ```C++
 
+    // Define a handler for signal packets
     const auto signal_handler = [](const vita::view::signal& view) {
         std::vector<std::complex<float>> samples(view.payload().size() / sizeof(std::complex<float>));
         std::memcpy(samples.data(), view.payload().data(), view.payload().size());
@@ -51,12 +52,14 @@ It is designed around two goals:
         }
     };
 
+    // Define a handler for context packets
     const auto context_handler = [](const vita::view::context& view) {
         std::cout << "context stream id: 0x" << std::hex << view.stream_id().value_or(0u) << std::dec
                 << ", sample-rate=" << (view.has_sample_rate_sps() ? "present" : "missing")
                 << ", temperature=" << (view.has_temperature_celsius() ? "present" : "missing") << "\n";
     };
 
+    // Receive raw bytes on a socket
     std::vector<vita::byte> recv_buffer(2048);
     const auto received = ::recv(rx_fd, recv_buffer.data(), recv_buffer.size(), 0);
     if (received < 0) {
@@ -64,6 +67,7 @@ It is designed around two goals:
     }
     recv_buffer.resize(static_cast<std::size_t>(received));
 
+    // Access the raw bytes as views based on the handlers provided
     vita::packet::dispatch(vita::as_bytes_view(recv_buffer), signal_handler, context_handler);
 
 ```

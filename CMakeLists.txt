@@ -13,6 +13,9 @@ target_compile_features(Vitality INTERFACE cxx_std_20)
 add_executable(vitality_basic_example examples/basic.cpp)
 target_link_libraries(vitality_basic_example PRIVATE Vitality)
 
+add_executable(vitality_decode_format_example examples/decode_format.cpp)
+target_link_libraries(vitality_decode_format_example PRIVATE Vitality)
+
 if(UNIX)
     add_executable(vitality_socket_example examples/socket.cpp)
     target_link_libraries(vitality_socket_example PRIVATE Vitality)

@@ -183,6 +183,15 @@ Use that only when your wire convention stores payload words in the opposite byt
 - receive with `recvfrom(...)`
 - parse with `vita::view::signal`
 
+## Decode-format example
+
+`examples/decode_format.cpp` shows how to decode signal payloads safely by caching
+`signal-data format` metadata from context packets per stream ID:
+
+- process signal packets even if context has not arrived yet
+- cache `context.signal_data_format()` when context arrives
+- decode payload only when cached format matches your decode path (for example, float32 IQ)
+
 ## Dispatch example
 
 `examples/dispatch.cpp` shows how to bind your own handlers for both packet kinds and delegate parse+visit in one call:

@@ -206,7 +206,7 @@ or use the single-file drop-in form:
 #include "Vitality.hpp"
 ```
 
-A C++20 compiler is required because the library uses `std::span` and `std::bit_cast`.
+A C++20 compiler is required for `std::span` and `std::bit_cast`.
 
 ## Tests
 
